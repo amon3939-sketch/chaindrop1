@@ -17,7 +17,7 @@
     "@colyseus/core": "^0.16.0",
     "@colyseus/monitor": "^0.16.0",
     "@colyseus/ws-transport": "^0.16.0",
-    "colyseus": "^0.16.0",
+    "colyseus": "^0.17.10",
     "cors": "^2.8.5",
     "express": "^4.21.1",
     "express-basic-auth": "^1.2.1",
