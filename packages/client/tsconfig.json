@@ -1,0 +1,18 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "jsx": "react-jsx",
+    "types": ["vite/client", "vitest/globals"],
+    "paths": {
+      "@chaindrop/shared": ["../shared/src/index.ts"],
+      "@chaindrop/shared/*": ["../shared/src/*"],
+      "@/*": ["./src/*"]
+    },
+    "noEmit": true
+  },
+  "include": ["src/**/*", "vite.config.ts"],
+  "exclude": ["node_modules", "dist"],
+  "references": [{ "path": "../shared" }]
+}

@@ -1,0 +1,55 @@
+name: Deploy Client
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'packages/client/**'
+      - 'packages/shared/**'
+      - 'pnpm-lock.yaml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build-deploy:
+    name: Build and deploy to GitHub Pages
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build client
+        run: pnpm -F @chaindrop/client build
+        env:
+          VITE_SERVER_URL: ${{ secrets.SERVER_URL_PRODUCTION }}
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: packages/client/dist
+
+      - id: deployment
+        uses: actions/deploy-pages@v4

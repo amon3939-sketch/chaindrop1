@@ -1,0 +1,35 @@
+{
+  "name": "chaindrop",
+  "version": "0.0.1",
+  "private": true,
+  "description": "A drop-chain puzzle battle game, playable solo or with up to 4 players online.",
+  "packageManager": "pnpm@9.12.0",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "dev": "pnpm -r --parallel dev",
+    "build": "pnpm -r build",
+    "test": "pnpm -r test",
+    "test:watch": "pnpm -r --parallel test -- --watch",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "format": "biome format --write .",
+    "typecheck": "pnpm -r typecheck",
+    "preflight": "pnpm lint && pnpm typecheck && pnpm test && pnpm build",
+    "prepare": "simple-git-hooks"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
+    "lint-staged": "^15.2.10",
+    "simple-git-hooks": "^2.11.1",
+    "typescript": "^5.6.3"
+  },
+  "simple-git-hooks": {
+    "pre-commit": "pnpm lint-staged",
+    "commit-msg": "node scripts/validate-commit-msg.mjs $1"
+  },
+  "lint-staged": {
+    "*.{ts,tsx,js,mjs,json}": "biome check --write --no-errors-on-unmatched"
+  }
+}

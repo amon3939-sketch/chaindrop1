@@ -1,0 +1,37 @@
+{
+  "name": "@chaindrop/server",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc --build",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@chaindrop/shared": "workspace:*",
+    "@colyseus/core": "^0.16.0",
+    "@colyseus/monitor": "^0.16.0",
+    "@colyseus/ws-transport": "^0.16.0",
+    "colyseus": "^0.16.0",
+    "cors": "^2.8.5",
+    "express": "^4.21.1",
+    "express-basic-auth": "^1.2.1",
+    "pino": "^9.5.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@colyseus/testing": "^0.16.0",
+    "@types/cors": "^2.8.17",
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.9.0",
+    "@vitest/coverage-v8": "^2.1.4",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.4"
+  }
+}
