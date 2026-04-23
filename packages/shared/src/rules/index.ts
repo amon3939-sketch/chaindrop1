@@ -4,3 +4,4 @@ export * from './cluster';
 export * from './gravity';
 export * from './piece';
 export * from './rng';
+export * from './score';
