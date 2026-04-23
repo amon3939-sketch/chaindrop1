@@ -2,10 +2,8 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "outDir": "./dist",
-    "rootDir": "./src",
     "lib": ["ES2022"],
     "types": ["node", "vitest/globals"],
-    "composite": true,
     "experimentalDecorators": true,
     "emitDecoratorMetadata": true,
     "paths": {
@@ -14,6 +12,5 @@
     }
   },
   "include": ["src/**/*", "test/**/*"],
-  "exclude": ["node_modules", "dist"],
-  "references": [{ "path": "../shared" }]
+  "exclude": ["node_modules", "dist"]
 }

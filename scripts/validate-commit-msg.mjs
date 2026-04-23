@@ -5,7 +5,19 @@
  */
 import { readFileSync } from 'node:fs';
 
-const TYPES = ['feat', 'fix', 'docs', 'style', 'refactor', 'perf', 'test', 'chore', 'build', 'ci', 'revert'];
+const TYPES = [
+  'feat',
+  'fix',
+  'docs',
+  'style',
+  'refactor',
+  'perf',
+  'test',
+  'chore',
+  'build',
+  'ci',
+  'revert',
+];
 const PATTERN = new RegExp(`^(${TYPES.join('|')})(\\([a-z0-9,\\-\\s]+\\))?!?:\\s.+`);
 
 const msgFile = process.argv[2];

@@ -4,9 +4,9 @@
  * Full implementation per D6 §4 begins in M4.
  */
 import { createServer } from 'node:http';
+import { PROTOCOL_VERSION } from '@chaindrop/shared';
 import cors from 'cors';
 import express from 'express';
-import { PROTOCOL_VERSION } from '@chaindrop/shared';
 import { config } from './config';
 import { logger } from './util/logger';
 
