@@ -275,6 +275,17 @@ function processPlayer(
   player: PlayerState,
   actions: readonly InputAction[],
 ): void {
+  // SOFT_START / SOFT_END track a held-key state, not a per-frame
+  // action. They must be honored regardless of phase so that releasing
+  // ↓ during a chain (or between pieces) is not swallowed and the
+  // next piece doesn't inherit a stale fast-fall flag.
+  // See bug: post-chain piece falls too fast when ↓ was released
+  // while not in the `falling` phase.
+  for (const action of actions) {
+    if (action === 'SOFT_START') player.softDrop = true;
+    else if (action === 'SOFT_END') player.softDrop = false;
+  }
+
   switch (player.phase) {
     case 'spawn':
       handleSpawn(match, player);
@@ -393,11 +404,11 @@ function applyAction(player: PlayerState, action: InputAction): void {
       if (next) onInputSuccess(player, next);
       break;
     }
+    // SOFT_START / SOFT_END are handled in processPlayer before the phase
+    // switch so that key-up events survive phase transitions.
     case 'SOFT_START':
-      player.softDrop = true;
       break;
     case 'SOFT_END':
-      player.softDrop = false;
       break;
   }
 }
