@@ -9,9 +9,9 @@
 
 import {
   type CellKind,
+  POP_FRAMES,
   type PlayerState,
   type PuyoColor,
-  RESOLVE_TICK_FRAMES,
   VISIBLE_HEIGHT,
   getChildPos,
   isNormalColor,
@@ -73,11 +73,14 @@ export function computeFieldSprites(player: PlayerState, alpha = 0): FieldSprite
   const sprites: FieldSprite[] = [];
 
   // Lookup: which board cells are mid-pop right now?
+  // The pop animation covers the first POP_FRAMES of the resolve tick
+  // so that popProgress reaches 1.0 exactly when the simulator clears
+  // the cells. After that, the renderer animates the gravity fall.
   const poppingCells = new Set<number>();
   let popProgress = 0;
-  if (player.phase === 'resolving' && player.resolvingData) {
+  if (player.phase === 'resolving' && player.resolvingData && !player.resolvingData.applied) {
     const tick = player.resolvingData.tickFrame;
-    popProgress = Math.min(1, tick / RESOLVE_TICK_FRAMES);
+    popProgress = Math.min(1, tick / POP_FRAMES);
     for (const cluster of player.resolvingData.pendingClusters) {
       for (const c of cluster.cells) {
         poppingCells.add(c.y * FIELD_COLS + c.x);

@@ -53,6 +53,12 @@ export const CHIGIRI_FRAMES = 12;
 // (pop → collapse). Bumped from the original 25 to give each pop
 // time to register visually before the next cascade kicks off.
 export const RESOLVE_TICK_FRAMES = 40;
+// Sub-phase split inside a resolve tick:
+//   0..POP_FRAMES-1      pop animation (cells still on the board)
+//   at POP_FRAMES        clusters cleared, ojama swept, gravity applied
+//   POP_FRAMES..RESOLVE  renderer shows the settled board but animates
+//                        the fall of the cells that just moved
+export const POP_FRAMES = 20;
 export const WAIT_GARBAGE_FRAMES = 18;
 export const DEAD_FRAMES = 60;
 export const COUNTDOWN_FRAMES = 180;
@@ -98,6 +104,8 @@ export type SimulatorEvent =
 interface ResolvingData {
   pendingClusters: readonly Cluster[];
   tickFrame: number;
+  /** Set once `applyChainTick` has committed this tick's board changes. */
+  applied?: boolean;
 }
 
 export interface PlayerState {
@@ -480,9 +488,19 @@ function handleResolving(match: MatchState, player: PlayerState): void {
 
   const data = player.resolvingData;
   data.tickFrame++;
+  // Apply the logical tick (clear + gravity + score) halfway through
+  // so the renderer can spend the second half animating the fall.
+  if (data.tickFrame === POP_FRAMES && !data.applied) {
+    applyChainTick(match, player, data.pendingClusters);
+    data.applied = true;
+  }
   if (data.tickFrame < RESOLVE_TICK_FRAMES) return;
 
-  applyChainTick(match, player, data.pendingClusters);
+  // Safety net: make sure the tick has been applied even if constants
+  // were changed to equal values.
+  if (!data.applied) {
+    applyChainTick(match, player, data.pendingClusters);
+  }
   player.resolvingData = null;
 }
 

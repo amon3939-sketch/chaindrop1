@@ -168,15 +168,16 @@ describe('chain resolution during a bout', () => {
     p.chainCount = 0;
     p.resolvingData = null;
 
-    // Frame 1 enters the tick and sets up resolvingData.
-    advanceFrame(match);
-    // Drive through the 25-frame animation.
-    for (let i = 1; i < RESOLVE_TICK_FRAMES; i++) advanceFrame(match);
-    // One more frame should now have applied the tick.
-    // Actually the apply happens ON the 25th frame inside the animation
-    // count. Check that a chain_tick event has been emitted by now.
-    const tickEvents = collectEventsUntil(match, (e) => e.type === 'chain_tick', 60);
-    expect(tickEvents.some((e) => e.type === 'chain_tick')).toBe(true);
+    // Drive enough frames to cover the whole resolve tick, collecting
+    // events as we go. `match.events` is reset every frame, so we must
+    // accumulate rather than inspect the final frame's events.
+    const collected: MatchState['events'] = [];
+    for (let i = 0; i < RESOLVE_TICK_FRAMES + 5; i++) {
+      advanceFrame(match);
+      for (const e of match.events) collected.push(e);
+    }
+
+    expect(collected.some((e) => e.type === 'chain_tick')).toBe(true);
     expect(p.chainCount).toBeGreaterThanOrEqual(1);
     expect(p.maxChain).toBeGreaterThanOrEqual(1);
     expect(p.score).toBe(40);
