@@ -2,6 +2,7 @@ import type { MatchState } from '@chaindrop/shared';
 import { useEffect, useRef, useState } from 'react';
 import { InputSystem } from '../input/InputSystem';
 import { FieldRenderer } from '../renderer/FieldRenderer';
+import { NextRenderer } from '../renderer/NextRenderer';
 import { PixiApp } from '../renderer/PixiApp';
 import { PuyoSheet } from '../renderer/PuyoTexture';
 import { FrameScheduler } from '../simulator/FrameScheduler';
@@ -49,6 +50,7 @@ export function MatchScene({ seed, colorMode = 4, onEnd, onQuit }: Props) {
     const pixi = new PixiApp({ canvas, autoFit: true });
 
     let renderer: FieldRenderer | null = null;
+    let nextRenderer: NextRenderer | null = null;
     let scheduler: FrameScheduler | null = null;
     let sheet: PuyoSheet | null = null;
     let cancelled = false;
@@ -72,7 +74,9 @@ export function MatchScene({ seed, colorMode = 4, onEnd, onQuit }: Props) {
         }
         sheet = loadedSheet;
         renderer = new FieldRenderer(loadedSheet);
+        nextRenderer = new NextRenderer(loadedSheet);
         pixi.worldContainer.addChild(renderer.container);
+        pixi.worldContainer.addChild(nextRenderer.container);
 
         source.onMatchEnd(() => {
           if (matchEnded) return;
@@ -97,6 +101,7 @@ export function MatchScene({ seed, colorMode = 4, onEnd, onQuit }: Props) {
             const p = match.players[0];
             if (!p || !renderer) return;
             renderer.update(p);
+            nextRenderer?.update(match);
           },
         });
         scheduler.start();
@@ -112,6 +117,7 @@ export function MatchScene({ seed, colorMode = 4, onEnd, onQuit }: Props) {
       window.removeEventListener('keydown', onEscape);
       scheduler?.dispose();
       renderer?.destroy();
+      nextRenderer?.destroy();
       sheet?.destroy();
       pixi.destroy();
       input.dispose();

@@ -590,24 +590,19 @@ function isVisibleCell(x: number, y: number): boolean {
 // ---------- waitGarbage ----------
 
 function handleWaitGarbage(match: MatchState, player: PlayerState): void {
-  if (player.phaseFrame === 0) {
-    if (player.pendingGarbage > 0) {
-      const result = placeOjama(player.board, player.pendingGarbage, match.rng);
-      player.pendingGarbage = result.carryOver;
-      match.events.push({
-        type: 'ojama_drop',
-        playerId: player.id,
-        dropped: result.dropped,
-        destroyed: result.destroyed,
-        carryOver: result.carryOver,
-      });
-    } else {
-      // No garbage this wave → skip animation.
-      player.phase = 'spawn';
-      player.phaseFrame = 0;
-      return;
-    }
+  if (player.phaseFrame === 0 && player.pendingGarbage > 0) {
+    const result = placeOjama(player.board, player.pendingGarbage, match.rng);
+    player.pendingGarbage = result.carryOver;
+    match.events.push({
+      type: 'ojama_drop',
+      playerId: player.id,
+      dropped: result.dropped,
+      destroyed: result.destroyed,
+      carryOver: result.carryOver,
+    });
   }
+  // Always run the full wait period — even with no incoming garbage —
+  // so there is a 0.3s breather before the next piece spawns.
   player.phaseFrame++;
   if (player.phaseFrame >= WAIT_GARBAGE_FRAMES) {
     player.phase = 'spawn';
