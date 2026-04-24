@@ -3,28 +3,24 @@
  *
  * Visual responsibilities:
  *   - Field frame + grid (drawn once).
- *   - Per-cell puyo sprites pulled from the sprite sheet (see
- *     `PuyoTexture`). Connection info picks the right sheet row so
- *     same-color neighbours visually fuse like the original.
- *   - Rotation animation: when the piece's rotation changes, the
- *     child puyo traces a circular arc around the axis (not a
- *     diagonal lerp). Wall kicks animate the axis sliding at the
- *     same time.
- *   - Natural fall and horizontal move: SNAP — no smoothing.
- *   - Gravity fall animation: when cells land on lower rows after a
- *     chain tick, they visibly fall from their previous y to their
- *     new y with an ease-in curve.
- *   - Pop animation: during the first half of a chain tick the
- *     popping cells grow briefly then shrink and fade.
- *
- * The pure state → sprite list mapping still lives in
- * `computeFieldSprites`; this file just consumes the specs and
- * manages live scene-graph objects.
+ *   - Puyo sprites from the sprite sheet (see `PuyoTexture`). Connection
+ *     info picks the right sheet row so same-color neighbours visually
+ *     fuse like the original.
+ *   - Rotation animation: the child puyo traces a circular arc around
+ *     the axis; wall kicks also slide the axis in parallel.
+ *   - Horizontal move + natural fall: SNAP to grid.
+ *   - Soft drop: smoothed toward target so the slide reads as fluid.
+ *   - Gravity fall animation after chain ticks: uniform pixels-per-frame
+ *     speed with a gummy bounce when a cell lands.
+ *   - Pop animation: grow, fade, rapid-blink during the pop window.
+ *   - Burst particles radiate outward when a puyo is cleared.
+ *   - Occasional eye blinks on settled puyos (sprite squash).
  */
 
 import type { PlayerState } from '@chaindrop/shared';
 import { Container, Graphics, Sprite, type Texture } from 'pixi.js';
 import type { PuyoSheet } from './PuyoTexture';
+import { SHEET_CELL } from './PuyoTexture';
 import { type FieldSprite, computeFieldSprites } from './fieldView';
 import {
   CELL_SIZE,
@@ -39,15 +35,26 @@ import {
 const FRAME_LINE_COLOR = 0xffd60a;
 const GRID_LINE_COLOR = 0x2a2a44;
 
-/** Frames it takes the rotation arc animation to complete. */
+/** Target sprite size / texture cell size. Applied as the base scale. */
+const BASE_SCALE = CELL_SIZE / SHEET_CELL; // 40 / 32 = 1.25
+
+/** Rotation arc duration in render frames. */
 const ROTATION_FRAMES = 6;
-/** Frames it takes a gravity-fallen cell to reach its final position. */
-const FALL_FRAMES = 12;
+/** Lerp factor for smoothed soft-drop descent (per render frame). */
+const SOFT_DROP_LERP = 0.35;
+/** Gravity-fall speed in pixels per render frame (uniform across columns). */
+const FALL_SPEED = CELL_SIZE / 5; // 8 px/frame — slightly less than 1 cell per 5 frames.
+/** Duration of the post-fall gummy bounce, in render frames. */
+const BOUNCE_FRAMES = 8;
+/** Rapid-blink alternation period (render frames) during pop. */
+const POP_BLINK_PERIOD = 3;
+/** Average frames between idle-blink attempts per puyo. */
+const IDLE_BLINK_AVG_INTERVAL = 240; // ~4s at 60fps
+/** How long one idle blink lasts. */
+const IDLE_BLINK_FRAMES = 6;
 
 /**
- * Which screen-space angle (radians) the child sits at for each
- * rotation. Screen coords: x+ right, y+ down. A right-handed angle
- * where 0 points right grows clockwise in screen space.
+ * Screen-space angle (radians) the child sits at for each rotation.
  *   rotation 0 (child BELOW)  → π/2
  *   rotation 1 (child LEFT)   → π
  *   rotation 2 (child ABOVE)  → 3π/2
@@ -56,51 +63,68 @@ const FALL_FRAMES = 12;
 const ANGLE_BY_ROTATION: readonly number[] = [Math.PI / 2, Math.PI, (3 * Math.PI) / 2, 0];
 
 interface PieceAnim {
-  /** Angle of the child relative to axis, in radians (continuous, unwrapped). */
   currentAngle: number;
-  /** Axis display position (interpolated during wall kicks). */
   displayAxisX: number;
   displayAxisY: number;
-  /** Target angle the animation is moving toward. */
   targetAngle: number;
   targetAxisX: number;
   targetAxisY: number;
-  /** 0..1 progress of the active rotation animation (1 = settled). */
   rotProgress: number;
-  /** The piece's rotation we last saw — used to detect change. */
   lastRotation: number;
 }
 
-/** Snapshot of what's drawn at each board cell right now. */
 interface CellSnapshot {
   kind: string;
-  /** Displayed y in pixels (includes any in-progress fall). */
+  /** Displayed y in pixels right now (includes any in-progress fall). */
   displayY: number;
   /** Target y in pixels (where it should settle). */
   targetY: number;
-  /** 0..1 progress of the fall animation; 1 = settled. */
-  fallProgress: number;
+  /** True while the fall animation is still moving. */
+  falling: boolean;
+  /** Gummy-bounce frame counter: -1 means inactive, 0..BOUNCE_FRAMES-1 active. */
+  bounceFrame: number;
+  /** Frames left in an idle blink (0 = not blinking). */
+  blinkFrames: number;
+  /** Frames until next idle-blink attempt. */
+  nextBlinkIn: number;
+}
+
+interface BoardEntry {
+  sprite: Sprite;
+  snap: CellSnapshot;
+}
+
+/** One-shot radiating particle used for a pop burst. */
+interface Particle {
+  graphic: Graphics;
+  vx: number;
+  vy: number;
+  life: number;
+  maxLife: number;
 }
 
 export class FieldRenderer {
   readonly container: Container;
   private frameLayer: Graphics;
   private spriteLayer: Container;
+  private burstLayer: Container;
 
-  private boardSprites = new Map<string, { sprite: Sprite; snap: CellSnapshot }>();
+  private boardSprites = new Map<string, BoardEntry>();
   private pieceSprites = new Map<string, Sprite>();
   private pieceAnim: PieceAnim | null = null;
+  private particles: Particle[] = [];
 
   constructor(private sheet: PuyoSheet) {
     this.container = new Container();
     this.frameLayer = new Graphics();
     this.spriteLayer = new Container();
+    this.burstLayer = new Container();
     this.container.addChild(this.frameLayer);
     this.container.addChild(this.spriteLayer);
+    this.container.addChild(this.burstLayer);
     this.drawFrame();
   }
 
-  /** Apply a fresh `PlayerState` to the scene. Called each render frame. */
   update(player: PlayerState): void {
     const specs = computeFieldSprites(player);
     this.updateBoardSprites(specs.filter((s) => s.kind === 'board'));
@@ -108,13 +132,17 @@ export class FieldRenderer {
       specs.filter((s) => s.kind === 'axis' || s.kind === 'child'),
       player,
     );
+    this.tickParticles();
   }
 
   destroy(): void {
     for (const { sprite } of this.boardSprites.values()) sprite.destroy();
     for (const s of this.pieceSprites.values()) s.destroy();
+    for (const p of this.particles) p.graphic.destroy();
     this.boardSprites.clear();
     this.pieceSprites.clear();
+    this.particles = [];
+    this.burstLayer.destroy({ children: true });
     this.spriteLayer.destroy({ children: true });
     this.frameLayer.destroy();
     this.container.destroy({ children: true });
@@ -131,12 +159,8 @@ export class FieldRenderer {
       seen.add(spec.id);
       const existing = this.boardSprites.get(spec.id);
       if (existing && existing.snap.kind === spec.cellKind) {
-        // Same slot, same color — just refresh.
         this.updateExistingBoardSprite(existing, spec);
       } else {
-        // Either brand new, or same slot received a different color
-        // (a same-column same-color cell fell into this slot from
-        // above). Rebuild so `findFallSource` can animate the drop.
         if (existing) {
           this.spriteLayer.removeChild(existing.sprite);
           existing.sprite.destroy();
@@ -148,9 +172,11 @@ export class FieldRenderer {
       }
     }
 
-    // Reap cells that are no longer present.
+    // Reap cells that vanished. Emit a pop burst at each one so the
+    // clear has a satisfying punctuation.
     for (const [id, entry] of this.boardSprites) {
       if (!seen.has(id)) {
+        this.emitBurst(entry.sprite.x, entry.snap.displayY, this.getTintForKind(entry.snap.kind));
         this.spriteLayer.removeChild(entry.sprite);
         entry.sprite.destroy();
         this.boardSprites.delete(id);
@@ -158,22 +184,18 @@ export class FieldRenderer {
     }
   }
 
-  private createBoardSprite(spec: FieldSprite): { sprite: Sprite; snap: CellSnapshot } {
+  private createBoardSprite(spec: FieldSprite): BoardEntry {
     const sprite = makeSprite(this.sheet.get(spec.cellKind, spec.connections));
     sprite.x = spec.x;
 
-    // If an equivalent colored cell existed somewhere in the same
-    // column at a higher y and just vanished, we treat this as a
-    // fall — animate the sprite from the vanished position down to
-    // the new spec.y. Otherwise it pops in place.
     let fallFromY = spec.y;
-    let fallProgress = 1;
+    let falling = false;
     const sourceId = this.findFallSource(spec);
     if (sourceId) {
       const source = this.boardSprites.get(sourceId);
       if (source) {
         fallFromY = source.snap.displayY;
-        fallProgress = 0;
+        falling = fallFromY < spec.y;
         this.spriteLayer.removeChild(source.sprite);
         source.sprite.destroy();
         this.boardSprites.delete(sourceId);
@@ -185,52 +207,111 @@ export class FieldRenderer {
       kind: spec.cellKind,
       displayY: fallFromY,
       targetY: spec.y,
-      fallProgress,
+      falling,
+      bounceFrame: -1,
+      blinkFrames: 0,
+      nextBlinkIn: randomBlinkDelay(),
     };
-    applyPopTransform(sprite, spec);
-    return { sprite, snap };
+    const entry: BoardEntry = { sprite, snap };
+    this.applyVisualState(entry, spec);
+    return entry;
   }
 
-  private updateExistingBoardSprite(
-    entry: { sprite: Sprite; snap: CellSnapshot },
-    spec: FieldSprite,
-  ): void {
-    // Refresh texture in case connections changed.
+  private updateExistingBoardSprite(entry: BoardEntry, spec: FieldSprite): void {
     entry.sprite.texture = this.sheet.get(spec.cellKind, spec.connections);
     entry.sprite.x = spec.x;
     if (entry.snap.targetY !== spec.y) {
       entry.snap.targetY = spec.y;
-      entry.snap.fallProgress = 0;
+      entry.snap.falling = entry.snap.displayY < spec.y;
+      entry.snap.bounceFrame = -1;
     }
     this.tickFall(entry);
-    applyPopTransform(entry.sprite, spec);
+    this.tickIdleBlink(entry);
+    this.applyVisualState(entry, spec);
   }
 
-  /** Advance the fall animation by one render frame. */
-  private tickFall(entry: { sprite: Sprite; snap: CellSnapshot }): void {
-    if (entry.snap.fallProgress >= 1) {
-      entry.snap.displayY = entry.snap.targetY;
-      entry.sprite.y = entry.snap.targetY;
+  /** Uniform-speed fall with a gummy bounce on impact. */
+  private tickFall(entry: BoardEntry): void {
+    const { snap } = entry;
+    if (snap.falling) {
+      snap.displayY = Math.min(snap.targetY, snap.displayY + FALL_SPEED);
+      if (snap.displayY >= snap.targetY) {
+        snap.displayY = snap.targetY;
+        snap.falling = false;
+        snap.bounceFrame = 0; // trigger bounce
+      }
+    }
+    entry.sprite.y = snap.displayY;
+
+    if (snap.bounceFrame >= 0 && snap.bounceFrame < BOUNCE_FRAMES) {
+      snap.bounceFrame += 1;
+    } else if (snap.bounceFrame >= BOUNCE_FRAMES) {
+      snap.bounceFrame = -1;
+    }
+  }
+
+  /** Idle eye-blink timer. Slightly randomised so puyos don't sync up. */
+  private tickIdleBlink(entry: BoardEntry): void {
+    const { snap } = entry;
+    if (snap.blinkFrames > 0) {
+      snap.blinkFrames -= 1;
       return;
     }
-    const prev = entry.snap.fallProgress;
-    const next = Math.min(1, prev + 1 / FALL_FRAMES);
-    entry.snap.fallProgress = next;
-    const fromY = entry.snap.displayY;
-    const toY = entry.snap.targetY;
-    // Advance as a fraction of the REMAINING distance this frame,
-    // which gives a smooth ease-out as we approach the target without
-    // requiring us to remember the original source y.
-    const stepT = (next - prev) / Math.max(1e-6, 1 - prev);
-    entry.snap.displayY = fromY + (toY - fromY) * stepT;
-    entry.sprite.y = entry.snap.displayY;
+    if (snap.falling || snap.bounceFrame >= 0) return;
+    snap.nextBlinkIn -= 1;
+    if (snap.nextBlinkIn <= 0) {
+      snap.blinkFrames = IDLE_BLINK_FRAMES;
+      snap.nextBlinkIn = randomBlinkDelay();
+    }
   }
 
   /**
-   * If the spec looks like a new cell that just appeared in a column
-   * that currently has a same-color sprite at a higher y (about to
-   * become stale because the sim cleared/gravity-moved it), return
-   * that sprite's id so we can hand off its visual y.
+   * Combined scale + alpha calc per frame. Order of application:
+   *   base × bounce × pop × blink
+   */
+  private applyVisualState(entry: BoardEntry, spec: FieldSprite): void {
+    const s = entry.sprite;
+    let scaleX = BASE_SCALE;
+    let scaleY = BASE_SCALE;
+    let alpha = 1;
+
+    // Pop: grow-then-shrink + fade + rapid blink.
+    if (spec.popProgress !== undefined && spec.popProgress > 0) {
+      const p = Math.min(1, spec.popProgress);
+      const popScale =
+        p < 0.35 ? 1 + (p / 0.35) * 0.25 : Math.max(0, 1.25 - ((p - 0.35) / 0.65) * 1.25);
+      scaleX *= popScale;
+      scaleY *= popScale;
+      alpha *= Math.max(0, 1 - p * 1.2);
+      // Rapid-blink: alternate full/dim alpha every few frames.
+      const blinkPhase = Math.floor((p * (15 / POP_BLINK_PERIOD)) % 2);
+      if (blinkPhase === 1) alpha *= 0.25;
+    }
+
+    // Bounce: quick vertical squish + recovery after landing.
+    if (entry.snap.bounceFrame >= 0 && entry.snap.bounceFrame < BOUNCE_FRAMES) {
+      const t = entry.snap.bounceFrame / BOUNCE_FRAMES; // 0..1
+      // Parabolic easing: squashY goes 1 → 0.78 → 1; width goes 1 → 1.12 → 1
+      const bend = Math.sin(t * Math.PI);
+      scaleX *= 1 + 0.12 * bend;
+      scaleY *= 1 - 0.22 * bend;
+    }
+
+    // Idle blink: quick squint on the Y axis.
+    if (entry.snap.blinkFrames > 0) {
+      const t = 1 - entry.snap.blinkFrames / IDLE_BLINK_FRAMES;
+      const bend = Math.sin(t * Math.PI);
+      scaleY *= 1 - 0.45 * bend;
+    }
+
+    s.scale.set(scaleX, scaleY);
+    s.alpha = alpha;
+  }
+
+  /**
+   * If the spec looks like a new same-color cell that just appeared
+   * lower than a now-gone sprite in the same column, return that
+   * source's id so we can hand off its displayed y for the fall.
    */
   private findFallSource(spec: FieldSprite): string | null {
     const m = /^cell:(\d+):(\d+)$/.exec(spec.id);
@@ -254,8 +335,67 @@ export class FieldRenderer {
     return bestSourceId;
   }
 
+  /** RGB tint for particles when a cell of `kind` pops. */
+  private getTintForKind(kind: string): number {
+    switch (kind) {
+      case 'R':
+        return 0xff4a6b;
+      case 'G':
+        return 0x6ce048;
+      case 'Y':
+        return 0xffd23a;
+      case 'B':
+        return 0x4a9bff;
+      case 'P':
+        return 0xc864ff;
+      default:
+        return 0xffffff;
+    }
+  }
+
   // ----------------------------------------------------------------
-  // Active piece (axis + child)
+  // Particles (pop bursts)
+  // ----------------------------------------------------------------
+
+  private emitBurst(x: number, y: number, color: number): void {
+    const count = 6;
+    for (let i = 0; i < count; i++) {
+      const g = new Graphics();
+      g.circle(0, 0, 3);
+      g.fill({ color, alpha: 1 });
+      g.x = x;
+      g.y = y;
+      this.burstLayer.addChild(g);
+      const angle = (i / count) * Math.PI * 2 + Math.random() * 0.6;
+      const speed = 3 + Math.random() * 2;
+      this.particles.push({
+        graphic: g,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed - 1.5,
+        life: 18,
+        maxLife: 18,
+      });
+    }
+  }
+
+  private tickParticles(): void {
+    for (let i = this.particles.length - 1; i >= 0; i--) {
+      const p = this.particles[i] as Particle;
+      p.graphic.x += p.vx;
+      p.graphic.y += p.vy;
+      p.vy += 0.25; // gravity
+      p.life -= 1;
+      p.graphic.alpha = p.life / p.maxLife;
+      if (p.life <= 0) {
+        this.burstLayer.removeChild(p.graphic);
+        p.graphic.destroy();
+        this.particles.splice(i, 1);
+      }
+    }
+  }
+
+  // ----------------------------------------------------------------
+  // Active piece
   // ----------------------------------------------------------------
 
   private updatePieceSprites(specs: FieldSprite[], player: PlayerState): void {
@@ -306,9 +446,7 @@ export class FieldRenderer {
         lastRotation: piece.rotation,
       };
     } else if (piece.rotation !== this.pieceAnim.lastRotation) {
-      // Rotation change — start a fresh arc from the current visual
-      // state toward the new target. For wall kicks the axis also
-      // needs to slide; we lerp both in parallel.
+      // Rotation change → start a fresh arc animation.
       const fromAngle = this.pieceAnim.currentAngle;
       const toAngle = pickShortTarget(fromAngle, targetAngle);
       this.pieceAnim.targetAngle = toAngle;
@@ -317,24 +455,32 @@ export class FieldRenderer {
       this.pieceAnim.rotProgress = 0;
       this.pieceAnim.lastRotation = piece.rotation;
     } else {
-      // Horizontal move or natural fall — SNAP.
+      // No rotation change. Horizontal move → SNAP. Soft drop
+      // descent → SMOOTH. Natural fall → SNAP.
       this.pieceAnim.currentAngle = targetAngle;
-      this.pieceAnim.displayAxisX = targetAxisX;
-      this.pieceAnim.displayAxisY = targetAxisY;
       this.pieceAnim.targetAngle = targetAngle;
       this.pieceAnim.targetAxisX = targetAxisX;
       this.pieceAnim.targetAxisY = targetAxisY;
       this.pieceAnim.rotProgress = 1;
+
+      // Horizontal always snaps.
+      this.pieceAnim.displayAxisX = targetAxisX;
+
+      // Vertical: smooth while soft-dropping, snap otherwise.
+      if (player.softDrop && targetAxisY !== this.pieceAnim.displayAxisY) {
+        const dy = targetAxisY - this.pieceAnim.displayAxisY;
+        this.pieceAnim.displayAxisY += dy * SOFT_DROP_LERP;
+        if (Math.abs(dy) < 0.5) this.pieceAnim.displayAxisY = targetAxisY;
+      } else {
+        this.pieceAnim.displayAxisY = targetAxisY;
+      }
     }
 
-    // Advance the rotation animation if active.
+    // Rotation animation progress.
     if (this.pieceAnim.rotProgress < 1) {
       const prev = this.pieceAnim.rotProgress;
       const next = Math.min(1, prev + 1 / ROTATION_FRAMES);
       this.pieceAnim.rotProgress = next;
-      // Ease-out. We advance a FRACTION of the remaining distance each
-      // frame, so the "currentAngle" field always holds what we're
-      // currently displaying.
       const stepT =
         (easeOutCubic(next) - easeOutCubic(prev)) / Math.max(1e-6, 1 - easeOutCubic(prev));
       this.pieceAnim.currentAngle +=
@@ -352,9 +498,13 @@ export class FieldRenderer {
 
     axisSprite.x = this.pieceAnim.displayAxisX;
     axisSprite.y = this.pieceAnim.displayAxisY;
+    axisSprite.scale.set(BASE_SCALE);
+    axisSprite.alpha = 1;
     const angle = this.pieceAnim.currentAngle;
     childSprite.x = this.pieceAnim.displayAxisX + Math.cos(angle) * CELL_SIZE;
     childSprite.y = this.pieceAnim.displayAxisY + Math.sin(angle) * CELL_SIZE;
+    childSprite.scale.set(BASE_SCALE);
+    childSprite.alpha = 1;
   }
 
   // ----------------------------------------------------------------
@@ -392,21 +542,10 @@ export class FieldRenderer {
 function makeSprite(texture: Texture): Sprite {
   const s = new Sprite(texture);
   s.anchor.set(0.5);
-  s.width = CELL_SIZE;
-  s.height = CELL_SIZE;
+  // Use scale (not width/height) so that downstream scale.set() calls
+  // multiply the base rather than reset it.
+  s.scale.set(BASE_SCALE);
   return s;
-}
-
-function applyPopTransform(sprite: Sprite, spec: FieldSprite): void {
-  if (spec.popProgress !== undefined && spec.popProgress > 0) {
-    const p = Math.min(1, spec.popProgress);
-    const scale = p < 0.35 ? 1 + (p / 0.35) * 0.25 : Math.max(0, 1.25 - ((p - 0.35) / 0.65) * 1.25);
-    sprite.scale.set(scale);
-    sprite.alpha = Math.max(0, 1 - p * 1.2);
-  } else {
-    sprite.scale.set(1);
-    sprite.alpha = 1;
-  }
 }
 
 function easeOutCubic(t: number): number {
@@ -419,4 +558,10 @@ function pickShortTarget(from: number, naiveTarget: number): number {
   while (delta > Math.PI) delta -= 2 * Math.PI;
   while (delta < -Math.PI) delta += 2 * Math.PI;
   return from + delta;
+}
+
+function randomBlinkDelay(): number {
+  // Poisson-ish: uniform 0.5x..1.5x of the mean, per-puyo random offset.
+  const jitter = 0.5 + Math.random();
+  return Math.floor(IDLE_BLINK_AVG_INTERVAL * jitter);
 }

@@ -277,13 +277,22 @@ describe('waitGarbage phase', () => {
     expect(p.phase).toBe('spawn');
   });
 
-  it('skips animation when there is no pending garbage', () => {
+  it('still waits the full breather even with no pending garbage', () => {
+    // Previously we skipped straight to spawn when no garbage was
+    // queued, but playtest feedback asked for a consistent 0.3s
+    // (= 18f) pause before the next piece arrives. The full
+    // WAIT_GARBAGE_FRAMES window now runs in both paths.
     const match = createMatchState({ seed: 1, colorMode: 4, players: [{ id: 'A' }] });
     const p = match.players[0]!;
     p.phase = 'waitGarbage';
     p.phaseFrame = 0;
 
+    // One frame in — still waiting, not yet spawning.
     advanceFrame(match);
+    expect(p.phase).toBe('waitGarbage');
+
+    // Drive the remaining frames; the wait completes on the 18th.
+    for (let i = 0; i < WAIT_GARBAGE_FRAMES - 1; i++) advanceFrame(match);
     expect(p.phase).toBe('spawn');
   });
 });

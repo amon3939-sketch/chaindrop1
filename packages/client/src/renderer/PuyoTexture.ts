@@ -106,6 +106,11 @@ export class PuyoSheet {
   static async load(baseUrl?: string): Promise<PuyoSheet> {
     const url = baseUrl ? `${baseUrl}${PUYO_SHEET_PATH}` : PUYO_SHEET_PATH;
     const texture = (await Assets.load<Texture>(url)) as Texture;
+    // Nearest-neighbour filtering so that cropping one 32×32 cell out
+    // of the atlas never samples a pixel from the neighbouring row.
+    // Without this, linear filtering produced horizontal grey streaks
+    // across the up+side connection rows.
+    texture.source.scaleMode = 'nearest';
     return new PuyoSheet(texture);
   }
 
