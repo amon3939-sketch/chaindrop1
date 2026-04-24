@@ -7,10 +7,25 @@
  * working Pixi/WebGL context.
  */
 
-import { type CellKind, type PlayerState, VISIBLE_HEIGHT, getChildPos } from '@chaindrop/shared';
+import {
+  type CellKind,
+  type PlayerState,
+  type PuyoColor,
+  RESOLVE_TICK_FRAMES,
+  VISIBLE_HEIGHT,
+  getChildPos,
+  isNormalColor,
+} from '@chaindrop/shared';
 import { FIELD_COLS, cellCenter, colorFor } from './layout';
 
 export type SpriteKind = 'board' | 'axis' | 'child';
+
+export interface SpriteConnections {
+  up: boolean;
+  right: boolean;
+  down: boolean;
+  left: boolean;
+}
 
 export interface FieldSprite {
   /** Stable identity for renderer diffing ("col:row" or "piece:axis"/"piece:child"). */
@@ -24,6 +39,20 @@ export interface FieldSprite {
   /** Target pixel center — already interpolated when applicable. */
   x: number;
   y: number;
+  /**
+   * Which of the four cardinal neighbours share this cell's color.
+   * Used by the renderer to draw connector nubs that visually fuse
+   * same-color puyos into a single organic blob (original-style).
+   * Only normal-color BOARD cells set this — ojama and the active
+   * piece sprites do not connect visually in solo play.
+   */
+  connections?: SpriteConnections;
+  /**
+   * 0..1 pop-animation progress when this cell is currently in the
+   * popping phase of a chain tick. Absent when the sprite is not
+   * being popped.
+   */
+  popProgress?: number;
 }
 
 /**
@@ -31,21 +60,36 @@ export interface FieldSprite {
  *
  *   - Every non-empty cell inside the VISIBLE area becomes one sprite.
  *   - The active piece (if any) is drawn separately at its current
- *     axis/child coordinates. The simulator advances the piece by
- *     whole cells per frame; `alpha` is accepted for API symmetry
- *     with the renderer's call signature but is not used for piece
- *     movement at this stage (smooth interpolation lands with the
- *     animation pass in a later milestone).
+ *     axis/child coordinates.
+ *   - When the player is resolving a chain, cells in the current
+ *     popping clusters get a `popProgress` (0..1) so the renderer
+ *     can scale / fade them.
+ *
+ * `alpha` is accepted for API symmetry but not currently used — piece
+ * smoothing is handled in the renderer's own animation state.
  */
 export function computeFieldSprites(player: PlayerState, alpha = 0): FieldSprite[] {
-  void alpha; // reserved for later interpolation
+  void alpha;
   const sprites: FieldSprite[] = [];
+
+  // Lookup: which board cells are mid-pop right now?
+  const poppingCells = new Set<number>();
+  let popProgress = 0;
+  if (player.phase === 'resolving' && player.resolvingData) {
+    const tick = player.resolvingData.tickFrame;
+    popProgress = Math.min(1, tick / RESOLVE_TICK_FRAMES);
+    for (const cluster of player.resolvingData.pendingClusters) {
+      for (const c of cluster.cells) {
+        poppingCells.add(c.y * FIELD_COLS + c.x);
+      }
+    }
+  }
 
   // Settled cells
   for (let y = 0; y < VISIBLE_HEIGHT; y++) {
+    const row = player.board.cells[y];
+    if (!row) continue;
     for (let x = 0; x < FIELD_COLS; x++) {
-      const row = player.board.cells[y];
-      if (!row) continue;
       const cell = row[x];
       if (!cell) continue;
       const kind = cell.kind;
@@ -53,14 +97,21 @@ export function computeFieldSprites(player: PlayerState, alpha = 0): FieldSprite
       const color = colorFor(kind);
       if (color === null) continue;
       const { x: px, y: py } = cellCenter(x, y);
-      sprites.push({
+      const sprite: FieldSprite = {
         id: `cell:${x}:${y}`,
         kind: 'board',
         color,
         cellKind: kind,
         x: px,
         y: py,
-      });
+      };
+      if (isNormalColor(kind)) {
+        sprite.connections = computeConnections(player, x, y, kind);
+      }
+      if (poppingCells.has(y * FIELD_COLS + x)) {
+        sprite.popProgress = popProgress;
+      }
+      sprites.push(sprite);
     }
   }
 
@@ -95,4 +146,34 @@ export function computeFieldSprites(player: PlayerState, alpha = 0): FieldSprite
   }
 
   return sprites;
+}
+
+/**
+ * Inspect the 4-connected neighbours of (x, y) and report which ones
+ * share the same normal color. Only cells inside the visible area
+ * count — cells in the hidden row or overflow buffer never form a
+ * visual bond even if they happen to match colors.
+ */
+function computeConnections(
+  player: PlayerState,
+  x: number,
+  y: number,
+  color: PuyoColor,
+): SpriteConnections {
+  return {
+    up: sameColorVisible(player, x, y + 1, color),
+    right: sameColorVisible(player, x + 1, y, color),
+    down: sameColorVisible(player, x, y - 1, color),
+    left: sameColorVisible(player, x - 1, y, color),
+  };
+}
+
+function sameColorVisible(player: PlayerState, x: number, y: number, color: PuyoColor): boolean {
+  if (x < 0 || x >= FIELD_COLS) return false;
+  if (y < 0 || y >= VISIBLE_HEIGHT) return false;
+  const row = player.board.cells[y];
+  if (!row) return false;
+  const cell = row[x];
+  if (!cell) return false;
+  return cell.kind === color;
 }

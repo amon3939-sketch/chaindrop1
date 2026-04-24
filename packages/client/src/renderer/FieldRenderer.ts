@@ -5,7 +5,13 @@
  *   - Draw the field frame + grid once.
  *   - Maintain a set of puyo sprites, diffed by id so we only create
  *     / update / destroy on actual change.
- *   - Accept a fresh `PlayerState` each frame via `update()`.
+ *   - Smooth rotation / wall-kick / fall motion for the active piece
+ *     by lerping its displayed position toward the logical target.
+ *   - Animate pops: cells in a resolving cluster grow-then-shrink
+ *     and fade.
+ *   - Render same-color adjacency as connector nubs so neighbouring
+ *     puyos visually fuse (classic Puyo Puyo look, using programmer
+ *     art for now).
  *
  * The heavy lifting (state → sprite specs) lives in the pure
  * `computeFieldSprites` function so that logic is unit-tested without
@@ -30,11 +36,23 @@ import {
 const FRAME_LINE_COLOR = 0xffd60a;
 const GRID_LINE_COLOR = 0x2a2a44;
 
+/** Per-render-frame lerp factor for the active piece's position. */
+const PIECE_LERP = 0.3;
+/** Distance above which we snap rather than lerp (e.g. new spawn). */
+const SNAP_DISTANCE = CELL_SIZE * 3;
+
+interface SpriteView {
+  graphic: Graphics;
+  /** Displayed position — may trail the target while animating. */
+  displayX: number;
+  displayY: number;
+}
+
 export class FieldRenderer {
   readonly container: Container;
   private frameLayer: Graphics;
   private spriteLayer: Container;
-  private sprites = new Map<string, Graphics>();
+  private sprites = new Map<string, SpriteView>();
 
   constructor() {
     this.container = new Container();
@@ -58,26 +76,26 @@ export class FieldRenderer {
       seen.add(spec.id);
       const existing = this.sprites.get(spec.id);
       if (existing) {
-        this.applySprite(existing, spec);
+        this.applyExisting(existing, spec);
       } else {
-        const g = this.createSprite(spec);
-        this.sprites.set(spec.id, g);
-        this.spriteLayer.addChild(g);
+        const view = this.createSprite(spec);
+        this.sprites.set(spec.id, view);
+        this.spriteLayer.addChild(view.graphic);
       }
     }
 
     // Reap stale sprites.
-    for (const [id, g] of this.sprites) {
+    for (const [id, view] of this.sprites) {
       if (!seen.has(id)) {
-        this.spriteLayer.removeChild(g);
-        g.destroy();
+        this.spriteLayer.removeChild(view.graphic);
+        view.graphic.destroy();
         this.sprites.delete(id);
       }
     }
   }
 
   destroy(): void {
-    for (const g of this.sprites.values()) g.destroy();
+    for (const view of this.sprites.values()) view.graphic.destroy();
     this.sprites.clear();
     this.spriteLayer.destroy({ children: true });
     this.frameLayer.destroy();
@@ -112,19 +130,92 @@ export class FieldRenderer {
     g.stroke({ width: 3, color: FRAME_LINE_COLOR });
   }
 
-  private createSprite(spec: FieldSprite): Graphics {
+  private createSprite(spec: FieldSprite): SpriteView {
     const g = new Graphics();
-    this.applySprite(g, spec);
-    return g;
+    const view: SpriteView = {
+      graphic: g,
+      // New sprites start exactly at their target — no lerp-in from 0.
+      displayX: spec.x,
+      displayY: spec.y,
+    };
+    this.paint(view, spec);
+    return view;
   }
 
-  private applySprite(g: Graphics, spec: FieldSprite): void {
+  private applyExisting(view: SpriteView, spec: FieldSprite): void {
+    const isPieceSprite = spec.id === 'piece:axis' || spec.id === 'piece:child';
+    if (isPieceSprite) {
+      const dx = spec.x - view.displayX;
+      const dy = spec.y - view.displayY;
+      const dist = Math.hypot(dx, dy);
+      if (dist > SNAP_DISTANCE) {
+        view.displayX = spec.x;
+        view.displayY = spec.y;
+      } else {
+        view.displayX += dx * PIECE_LERP;
+        view.displayY += dy * PIECE_LERP;
+      }
+    } else {
+      // Board cells don't move, stay pinned to their spec position.
+      view.displayX = spec.x;
+      view.displayY = spec.y;
+    }
+    this.paint(view, spec);
+  }
+
+  /**
+   * Redraw the Graphics for a sprite. Connectors are drawn first so
+   * the circle body sits on top. The whole sprite is scaled / faded
+   * according to pop progress when present.
+   */
+  private paint(view: SpriteView, spec: FieldSprite): void {
+    const g = view.graphic;
     g.clear();
+
+    // Connector nubs toward same-color neighbours.
+    const reach = CELL_SIZE / 2 + 1; // slight overshoot so neighbours overlap cleanly
+    const nubW = PUYO_RADIUS * 1.15;
+    const nubH = PUYO_RADIUS * 1.15;
+    if (spec.connections) {
+      const c = spec.connections;
+      if (c.up) {
+        g.rect(-nubW / 2, -reach, nubW, reach);
+        g.fill(spec.color);
+      }
+      if (c.down) {
+        g.rect(-nubW / 2, 0, nubW, reach);
+        g.fill(spec.color);
+      }
+      if (c.left) {
+        g.rect(-reach, -nubH / 2, reach, nubH);
+        g.fill(spec.color);
+      }
+      if (c.right) {
+        g.rect(0, -nubH / 2, reach, nubH);
+        g.fill(spec.color);
+      }
+    }
+
+    // Body circle.
     g.circle(0, 0, PUYO_RADIUS);
     g.fill(spec.color);
     g.stroke({ width: 2, color: darken(spec.color, 0.4) });
-    g.x = spec.x;
-    g.y = spec.y;
+
+    g.x = view.displayX;
+    g.y = view.displayY;
+
+    // Pop animation: grow briefly, then shrink and fade.
+    if (spec.popProgress !== undefined && spec.popProgress > 0) {
+      const p = Math.min(1, spec.popProgress);
+      // Curve: scale up to 1.25 around p=0.35, then shrink to 0.
+      const scale =
+        p < 0.35 ? 1 + (p / 0.35) * 0.25 : Math.max(0, 1.25 - ((p - 0.35) / 0.65) * 1.25);
+      g.scale.set(scale);
+      g.alpha = Math.max(0, 1 - p * 1.2);
+    } else {
+      g.scale.set(1);
+      g.alpha = 1;
+    }
   }
 }
 
