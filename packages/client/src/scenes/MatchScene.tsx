@@ -3,8 +3,16 @@ import { useEffect, useRef, useState } from 'react';
 import { InputSystem } from '../input/InputSystem';
 import { FieldRenderer } from '../renderer/FieldRenderer';
 import { PixiApp } from '../renderer/PixiApp';
+import { PuyoSheet } from '../renderer/PuyoTexture';
 import { FrameScheduler } from '../simulator/FrameScheduler';
 import { LocalMatchSource } from '../simulator/LocalMatchSource';
+
+/**
+ * Vite rewrites its output with a runtime base path. Passing
+ * `import.meta.env.BASE_URL` to Pixi's asset loader ensures the sheet
+ * resolves correctly on both the dev server and a GitHub Pages subpath.
+ */
+const ASSET_BASE = import.meta.env.BASE_URL;
 
 export interface MatchResult {
   score: number;
@@ -42,6 +50,7 @@ export function MatchScene({ seed, colorMode = 4, onEnd, onQuit }: Props) {
 
     let renderer: FieldRenderer | null = null;
     let scheduler: FrameScheduler | null = null;
+    let sheet: PuyoSheet | null = null;
     let cancelled = false;
     let matchEnded = false;
 
@@ -52,14 +61,17 @@ export function MatchScene({ seed, colorMode = 4, onEnd, onQuit }: Props) {
     };
     window.addEventListener('keydown', onEscape);
 
-    pixi
-      .init()
-      .then(() => {
+    // Pixi + sprite sheet load in parallel — both must be ready before
+    // the renderer can mount.
+    Promise.all([pixi.init(), PuyoSheet.load(ASSET_BASE)])
+      .then(([_, loadedSheet]) => {
         if (cancelled) {
+          loadedSheet.destroy();
           pixi.destroy();
           return;
         }
-        renderer = new FieldRenderer();
+        sheet = loadedSheet;
+        renderer = new FieldRenderer(loadedSheet);
         pixi.worldContainer.addChild(renderer.container);
 
         source.onMatchEnd(() => {
@@ -81,17 +93,17 @@ export function MatchScene({ seed, colorMode = 4, onEnd, onQuit }: Props) {
             if (!p) return;
             setHud({ score: p.score, chain: p.chainCount, maxChain: p.maxChain });
           },
-          onRender: (match, alpha) => {
+          onRender: (match) => {
             const p = match.players[0];
             if (!p || !renderer) return;
-            renderer.update(p, alpha);
+            renderer.update(p);
           },
         });
         scheduler.start();
       })
       .catch((err) => {
-        // Initialization failed (e.g. no WebGL). Fall back to title.
-        console.error('[MatchScene] PixiApp init failed:', err);
+        // Initialization failed (e.g. no WebGL, asset not found).
+        console.error('[MatchScene] init failed:', err);
         onQuitRef.current();
       });
 
@@ -100,6 +112,7 @@ export function MatchScene({ seed, colorMode = 4, onEnd, onQuit }: Props) {
       window.removeEventListener('keydown', onEscape);
       scheduler?.dispose();
       renderer?.destroy();
+      sheet?.destroy();
       pixi.destroy();
       input.dispose();
       source.dispose();
