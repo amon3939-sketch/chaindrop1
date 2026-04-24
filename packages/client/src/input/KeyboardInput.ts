@@ -71,11 +71,49 @@ export class KeyboardInput {
 
     target.addEventListener('keydown', onDown);
     target.addEventListener('keyup', onUp);
+
+    // Safety net: browsers sometimes drop `keyup` events when the window
+    // loses focus (Alt/Cmd-Tab, clicking outside, Mission Control, etc.).
+    // Without this, a key that is held when focus is lost — then released
+    // off-screen — stays "held" forever from our perspective. That bug
+    // shows up as e.g. soft-drop staying on across piece transitions.
+    // On blur / visibility-hidden we synthesize key-up events for every
+    // currently-pressed action so downstream state resets cleanly.
+    const onBlur = () => this.releaseAllPressed();
+    const onVisibilityChange = () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+        this.releaseAllPressed();
+      }
+    };
+
+    let detachBlur: (() => void) | null = null;
+    let detachVisibility: (() => void) | null = null;
+    if (typeof window !== 'undefined') {
+      window.addEventListener('blur', onBlur);
+      detachBlur = () => window.removeEventListener('blur', onBlur);
+    }
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', onVisibilityChange);
+      detachVisibility = () => document.removeEventListener('visibilitychange', onVisibilityChange);
+    }
+
     this.detachFn = () => {
       target.removeEventListener('keydown', onDown);
       target.removeEventListener('keyup', onUp);
+      detachBlur?.();
+      detachVisibility?.();
     };
     return this.detachFn;
+  }
+
+  /**
+   * Synthesize release events for every currently-pressed action. Used
+   * by the blur / visibility-hidden safety net and by tests.
+   */
+  private releaseAllPressed(): void {
+    const held = Array.from(this.pressed);
+    this.pressed.clear();
+    for (const action of held) this.onActionUp(action);
   }
 
   /** Drain pending events and return the current `pressed` snapshot. */
