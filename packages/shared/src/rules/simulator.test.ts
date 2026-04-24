@@ -439,6 +439,42 @@ describe('input handling', () => {
     advanceFrame(match, { A: ['SOFT_END'] });
     expect(p.softDrop).toBe(false);
   });
+
+  it('SOFT_END received during resolving still clears softDrop (regression)', () => {
+    // Regression for: post-chain piece falls too fast because SOFT_END
+    // while in non-falling phase was silently dropped.
+    const match = createMatchState({ seed: 1, colorMode: 4, players: [{ id: 'A' }] });
+    const p = match.players[0]!;
+    p.softDrop = true;
+    p.phase = 'resolving';
+    p.phaseFrame = 0;
+    p.resolvingData = null;
+
+    advanceFrame(match, { A: ['SOFT_END'] });
+    expect(p.softDrop).toBe(false);
+  });
+
+  it('SOFT_END received during waitGarbage still clears softDrop (regression)', () => {
+    const match = createMatchState({ seed: 1, colorMode: 4, players: [{ id: 'A' }] });
+    const p = match.players[0]!;
+    p.softDrop = true;
+    p.phase = 'waitGarbage';
+    p.phaseFrame = 0;
+
+    advanceFrame(match, { A: ['SOFT_END'] });
+    expect(p.softDrop).toBe(false);
+  });
+
+  it('SOFT_START received during spawn is honored so the next piece falls fast', () => {
+    const match = createMatchState({ seed: 1, colorMode: 4, players: [{ id: 'A' }] });
+    const p = match.players[0]!;
+    p.softDrop = false;
+    p.phase = 'spawn';
+    p.phaseFrame = 0;
+
+    advanceFrame(match, { A: ['SOFT_START'] });
+    expect(p.softDrop).toBe(true);
+  });
 });
 
 // Guard: the exported cell getter path works on simulator-owned boards.
