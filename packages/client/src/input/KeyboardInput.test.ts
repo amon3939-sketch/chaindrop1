@@ -125,4 +125,41 @@ describe('KeyboardInput', () => {
     t.dispatch('keydown', 'KeyA');
     expect(k.consume().events).toEqual(['MOVE_L']);
   });
+
+  it('releases all pressed keys and emits SOFT_END on window blur', () => {
+    // Real `window` blur is fired here — jsdom dispatches blur events
+    // to window addEventListener when we invoke it manually.
+    const t = new FakeTarget();
+    const k = new KeyboardInput(DEFAULT_KEYBINDINGS);
+    k.attach(t);
+    t.dispatch('keydown', 'ArrowDown'); // SOFT_START
+    t.dispatch('keydown', 'ArrowLeft'); // MOVE_L tap
+    k.consume(); // drain initial events
+
+    window.dispatchEvent(new Event('blur'));
+
+    const { events, pressed } = k.consume();
+    expect(events).toContain('SOFT_END');
+    expect(pressed.size).toBe(0);
+  });
+
+  it('releases all pressed keys on visibility-hidden', () => {
+    const t = new FakeTarget();
+    const k = new KeyboardInput(DEFAULT_KEYBINDINGS);
+    k.attach(t);
+    t.dispatch('keydown', 'ArrowDown');
+    k.consume();
+
+    // jsdom does not trigger visibilitychange natively. Fake the state
+    // and fire the event the implementation listens for.
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      get: () => 'hidden',
+    });
+    document.dispatchEvent(new Event('visibilitychange'));
+
+    const { events, pressed } = k.consume();
+    expect(events).toContain('SOFT_END');
+    expect(pressed.size).toBe(0);
+  });
 });

@@ -42,7 +42,9 @@ import { trySpawn } from './spawn';
 
 // ---------- Config / timing constants ----------
 
-export const FALL_INTERVAL_NORMAL = 30;
+// One cell every 36 frames = 0.6s at 60fps. Slightly slower than the
+// initial 30f (0.5s) baseline based on playtest feel.
+export const FALL_INTERVAL_NORMAL = 36;
 export const FALL_INTERVAL_SOFT = 2;
 export const LOCK_DELAY_FRAMES = 15;
 export const LOCK_RESET_LIMIT = 8;
