@@ -49,7 +49,10 @@ export const FALL_INTERVAL_SOFT = 2;
 export const LOCK_DELAY_FRAMES = 15;
 export const LOCK_RESET_LIMIT = 8;
 export const CHIGIRI_FRAMES = 12;
-export const RESOLVE_TICK_FRAMES = 25;
+// One chain tick in frames. Covers the full clear animation cycle
+// (pop → collapse). Bumped from the original 25 to give each pop
+// time to register visually before the next cascade kicks off.
+export const RESOLVE_TICK_FRAMES = 40;
 export const WAIT_GARBAGE_FRAMES = 18;
 export const DEAD_FRAMES = 60;
 export const COUNTDOWN_FRAMES = 180;

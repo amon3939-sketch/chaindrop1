@@ -97,4 +97,73 @@ describe('computeFieldSprites', () => {
     setCell(p.board, 0, 0, 'R');
     expect(() => computeFieldSprites(p, 0.5)).not.toThrow();
   });
+
+  it('emits connection flags for same-color adjacent cells', () => {
+    const match = createMatchState({ seed: 1, colorMode: 4, players: [{ id: 'A' }] });
+    const p = match.players[0]!;
+    // Three reds in a row on y=0.
+    setCell(p.board, 0, 0, 'R');
+    setCell(p.board, 1, 0, 'R');
+    setCell(p.board, 2, 0, 'R');
+    const sprites = computeFieldSprites(p);
+    const find = (x: number, y: number) => sprites.find((s) => s.id === `cell:${x}:${y}`)!;
+    expect(find(0, 0).connections).toEqual({ up: false, right: true, down: false, left: false });
+    expect(find(1, 0).connections).toEqual({ up: false, right: true, down: false, left: true });
+    expect(find(2, 0).connections).toEqual({ up: false, right: false, down: false, left: true });
+  });
+
+  it('does not bond with a different-color neighbour', () => {
+    const match = createMatchState({ seed: 1, colorMode: 4, players: [{ id: 'A' }] });
+    const p = match.players[0]!;
+    setCell(p.board, 0, 0, 'R');
+    setCell(p.board, 1, 0, 'G');
+    const sprites = computeFieldSprites(p);
+    const r = sprites.find((s) => s.id === 'cell:0:0')!;
+    expect(r.connections?.right).toBe(false);
+  });
+
+  it('does not bond with a puyo in the hidden row even if same color', () => {
+    const match = createMatchState({ seed: 1, colorMode: 4, players: [{ id: 'A' }] });
+    const p = match.players[0]!;
+    setCell(p.board, 0, 11, 'R');
+    setCell(p.board, 0, 12, 'R'); // hidden
+    const sprites = computeFieldSprites(p);
+    const visible = sprites.find((s) => s.id === 'cell:0:11')!;
+    expect(visible.connections?.up).toBe(false);
+  });
+
+  it('omits connections for ojama cells', () => {
+    const match = createMatchState({ seed: 1, colorMode: 4, players: [{ id: 'A' }] });
+    const p = match.players[0]!;
+    setCell(p.board, 0, 0, 'X');
+    setCell(p.board, 1, 0, 'X');
+    const sprites = computeFieldSprites(p);
+    expect(sprites[0]?.connections).toBeUndefined();
+    expect(sprites[1]?.connections).toBeUndefined();
+  });
+
+  it('adds popProgress to cells inside a resolving cluster', () => {
+    const match = createMatchState({ seed: 1, colorMode: 4, players: [{ id: 'A' }] });
+    const p = match.players[0]!;
+    for (let x = 0; x < 4; x++) setCell(p.board, x, 0, 'R');
+    // Advance once so spawn runs, then manually prime resolving.
+    p.phase = 'resolving';
+    p.phaseFrame = 0;
+    p.resolvingData = null;
+    advanceFrame(match);
+    // The resolver now has pendingClusters + tickFrame=1.
+    expect(p.resolvingData).not.toBeNull();
+    const sprites = computeFieldSprites(p);
+    const cell = sprites.find((s) => s.id === 'cell:0:0')!;
+    expect(cell.popProgress).toBeGreaterThan(0);
+    expect(cell.popProgress).toBeLessThan(1);
+  });
+
+  it('does not set popProgress outside resolving phase', () => {
+    const match = createMatchState({ seed: 1, colorMode: 4, players: [{ id: 'A' }] });
+    const p = match.players[0]!;
+    setCell(p.board, 0, 0, 'R');
+    const [sprite] = computeFieldSprites(p);
+    expect(sprite?.popProgress).toBeUndefined();
+  });
 });
