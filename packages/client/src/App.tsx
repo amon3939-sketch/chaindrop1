@@ -1,23 +1,37 @@
-import { PROTOCOL_VERSION } from '@chaindrop/shared';
+import { useCallback, useState } from 'react';
+import { type MatchResult, MatchScene } from './scenes/MatchScene';
+import { ResultScene } from './scenes/ResultScene';
+import { TitleScene } from './scenes/TitleScene';
+
+type SceneKind = 'title' | 'match' | 'result';
 
 export function App() {
-  return (
-    <main
-      style={{
-        minHeight: '100vh',
-        background: '#1a1a2e',
-        color: '#ffd60a',
-        display: 'grid',
-        placeItems: 'center',
-        fontFamily: 'system-ui, sans-serif',
-      }}
-    >
-      <div style={{ textAlign: 'center' }}>
-        <h1 style={{ fontSize: '4rem', margin: 0 }}>ChainDrop</h1>
-        <p style={{ color: '#c8c8d8', marginTop: '1rem' }}>
-          M0 scaffold — protocol v{PROTOCOL_VERSION}
-        </p>
-      </div>
-    </main>
-  );
+  const [scene, setScene] = useState<SceneKind>('title');
+  const [matchKey, setMatchKey] = useState(0);
+  const [result, setResult] = useState<MatchResult | null>(null);
+
+  const startMatch = useCallback(() => {
+    setMatchKey((k) => k + 1);
+    setScene('match');
+  }, []);
+
+  const handleEnd = useCallback((r: MatchResult) => {
+    setResult(r);
+    setScene('result');
+  }, []);
+
+  const handleQuit = useCallback(() => {
+    setResult(null);
+    setScene('title');
+  }, []);
+
+  switch (scene) {
+    case 'title':
+      return <TitleScene onStart={startMatch} />;
+    case 'match':
+      return <MatchScene key={matchKey} onEnd={handleEnd} onQuit={handleQuit} />;
+    case 'result':
+      if (!result) return <TitleScene onStart={startMatch} />;
+      return <ResultScene result={result} onRestart={startMatch} onTitle={handleQuit} />;
+  }
 }
