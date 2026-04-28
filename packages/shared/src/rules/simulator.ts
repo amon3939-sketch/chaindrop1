@@ -48,17 +48,18 @@ export const FALL_INTERVAL_NORMAL = 36;
 export const FALL_INTERVAL_SOFT = 2;
 export const LOCK_DELAY_FRAMES = 15;
 export const LOCK_RESET_LIMIT = 8;
-export const CHIGIRI_FRAMES = 12;
+// Chigiri (split-drop) phase. Long enough for a tall column to be
+// visibly seen falling at the renderer's gravity-fall speed.
+export const CHIGIRI_FRAMES = 40;
 // One chain tick in frames. Covers the full clear animation cycle
-// (pop → collapse). Bumped from the original 25 to give each pop
-// time to register visually before the next cascade kicks off.
-export const RESOLVE_TICK_FRAMES = 40;
+// (pop → collapse). Stretched to give the pop a long, readable window.
+export const RESOLVE_TICK_FRAMES = 60;
 // Sub-phase split inside a resolve tick:
 //   0..POP_FRAMES-1      pop animation (cells still on the board)
 //   at POP_FRAMES        clusters cleared, ojama swept, gravity applied
 //   POP_FRAMES..RESOLVE  renderer shows the settled board but animates
 //                        the fall of the cells that just moved
-export const POP_FRAMES = 20;
+export const POP_FRAMES = 32;
 export const WAIT_GARBAGE_FRAMES = 18;
 export const DEAD_FRAMES = 60;
 export const COUNTDOWN_FRAMES = 180;
@@ -446,8 +447,10 @@ function onLock(match: MatchState, player: PlayerState): void {
   match.events.push({ type: 'lock', playerId: player.id });
 
   if (hasFloatingCells(player.board)) {
-    // Apply gravity now; chigiri is purely the animation.
-    applyGravity(player.board);
+    // Defer gravity until the END of chigiri so the renderer can see
+    // the cells at their LOCKED positions and animate the visible
+    // fall. Without this delay the cells teleport to their final
+    // positions in one frame.
     player.phase = 'chigiri';
     player.phaseFrame = 0;
     match.events.push({ type: 'chigiri_start', playerId: player.id });
@@ -456,11 +459,15 @@ function onLock(match: MatchState, player: PlayerState): void {
   }
 }
 
-// ---------- chigiri (12f) ----------
+// ---------- chigiri ----------
 
 function handleChigiri(_match: MatchState, player: PlayerState): void {
   player.phaseFrame++;
   if (player.phaseFrame >= CHIGIRI_FRAMES) {
+    // Commit gravity now and move on. The renderer will detect the
+    // change and animate the fall (its own clock continues across
+    // phase boundaries).
+    applyGravity(player.board);
     enterResolving(player);
   }
 }

@@ -28,12 +28,16 @@ export interface SpriteConnections {
   left: boolean;
 }
 
-/** The ordered column index for each supported cell kind. */
+/**
+ * The ordered column index for each supported cell kind. Verified
+ * against the sprite sheet by sampling body pixels — order is
+ * R, G, B, Y, P, X (NOT R/G/Y/B/P).
+ */
 const COLUMN_BY_KIND: Record<PuyoColor | 'X', number> = {
   R: 0,
   G: 1,
-  Y: 2,
-  B: 3,
+  B: 2,
+  Y: 3,
   P: 4,
   X: 5,
 };

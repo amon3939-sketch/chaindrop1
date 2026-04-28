@@ -46,12 +46,21 @@ const SOFT_DROP_LERP = 0.35;
 const FALL_SPEED = CELL_SIZE / 5; // 8 px/frame — slightly less than 1 cell per 5 frames.
 /** Duration of the post-fall gummy bounce, in render frames. */
 const BOUNCE_FRAMES = 8;
-/** Rapid-blink alternation period (render frames) during pop. */
-const POP_BLINK_PERIOD = 3;
 /** Average frames between idle-blink attempts per puyo. */
 const IDLE_BLINK_AVG_INTERVAL = 240; // ~4s at 60fps
 /** How long one idle blink lasts. */
-const IDLE_BLINK_FRAMES = 6;
+const IDLE_BLINK_FRAMES = 8;
+/** Eyelid color (a slightly darker grey on the puyo body). */
+const EYELID_COLOR = 0x1a1a1a;
+/** Eye geometry in screen pixels, relative to the sprite center. */
+const EYE_OFFSET_X = 6.5;
+const EYE_OFFSET_Y = -5;
+const EYE_W = 7;
+const EYE_H = 3;
+/** Average frames between look-around events per puyo. */
+const LOOK_AVG_INTERVAL = 720; // ~12s
+/** How long one look-around glance lasts. */
+const LOOK_FRAMES = 28;
 
 /**
  * Screen-space angle (radians) the child sits at for each rotation.
@@ -85,12 +94,31 @@ interface CellSnapshot {
   bounceFrame: number;
   /** Frames left in an idle blink (0 = not blinking). */
   blinkFrames: number;
+  /**
+   * Whether this idle event closes both eyes (false) or one eye only
+   * (true → wink). Random per event. Wink gets the LEFT eye when true.
+   */
+  blinkIsWink: boolean;
+  /** Which eye to wink, when blinkIsWink: 'L' or 'R'. */
+  winkEye: 'L' | 'R';
   /** Frames until next idle-blink attempt. */
   nextBlinkIn: number;
+  /** Look-around: 0 = idle, otherwise frames left in current glance. */
+  lookFrames: number;
+  /** Direction the eyes are looking when lookFrames > 0. */
+  lookDir: -1 | 0 | 1; // -1 = left, 0 = up/down (mixed), 1 = right
+  /** Vertical look offset (-1 up, 0 neutral, 1 down). */
+  lookDirY: -1 | 0 | 1;
+  /** Frames until the next look-around attempt. */
+  nextLookIn: number;
 }
 
 interface BoardEntry {
+  /** Container holding sprite + eye overlays so they share a transform. */
+  container: Container;
   sprite: Sprite;
+  leftEyelid: Graphics;
+  rightEyelid: Graphics;
   snap: CellSnapshot;
 }
 
@@ -136,7 +164,9 @@ export class FieldRenderer {
   }
 
   destroy(): void {
-    for (const { sprite } of this.boardSprites.values()) sprite.destroy();
+    for (const entry of this.boardSprites.values()) {
+      entry.container.destroy({ children: true });
+    }
     for (const s of this.pieceSprites.values()) s.destroy();
     for (const p of this.particles) p.graphic.destroy();
     this.boardSprites.clear();
@@ -162,13 +192,13 @@ export class FieldRenderer {
         this.updateExistingBoardSprite(existing, spec);
       } else {
         if (existing) {
-          this.spriteLayer.removeChild(existing.sprite);
-          existing.sprite.destroy();
+          this.spriteLayer.removeChild(existing.container);
+          existing.container.destroy({ children: true });
           this.boardSprites.delete(spec.id);
         }
         const entry = this.createBoardSprite(spec);
         this.boardSprites.set(spec.id, entry);
-        this.spriteLayer.addChild(entry.sprite);
+        this.spriteLayer.addChild(entry.container);
       }
     }
 
@@ -176,17 +206,34 @@ export class FieldRenderer {
     // clear has a satisfying punctuation.
     for (const [id, entry] of this.boardSprites) {
       if (!seen.has(id)) {
-        this.emitBurst(entry.sprite.x, entry.snap.displayY, this.getTintForKind(entry.snap.kind));
-        this.spriteLayer.removeChild(entry.sprite);
-        entry.sprite.destroy();
+        this.emitBurst(
+          entry.container.x,
+          entry.snap.displayY,
+          this.getTintForKind(entry.snap.kind),
+        );
+        this.spriteLayer.removeChild(entry.container);
+        entry.container.destroy({ children: true });
         this.boardSprites.delete(id);
       }
     }
   }
 
   private createBoardSprite(spec: FieldSprite): BoardEntry {
+    const container = new Container();
     const sprite = makeSprite(this.sheet.get(spec.cellKind, spec.connections));
-    sprite.x = spec.x;
+    const leftEyelid = makeEyelid();
+    leftEyelid.x = -EYE_OFFSET_X;
+    leftEyelid.y = EYE_OFFSET_Y;
+    leftEyelid.visible = false;
+    const rightEyelid = makeEyelid();
+    rightEyelid.x = EYE_OFFSET_X;
+    rightEyelid.y = EYE_OFFSET_Y;
+    rightEyelid.visible = false;
+    container.addChild(sprite);
+    container.addChild(leftEyelid);
+    container.addChild(rightEyelid);
+
+    container.x = spec.x;
 
     let fallFromY = spec.y;
     let falling = false;
@@ -196,13 +243,13 @@ export class FieldRenderer {
       if (source) {
         fallFromY = source.snap.displayY;
         falling = fallFromY < spec.y;
-        this.spriteLayer.removeChild(source.sprite);
-        source.sprite.destroy();
+        this.spriteLayer.removeChild(source.container);
+        source.container.destroy({ children: true });
         this.boardSprites.delete(sourceId);
       }
     }
 
-    sprite.y = fallFromY;
+    container.y = fallFromY;
     const snap: CellSnapshot = {
       kind: spec.cellKind,
       displayY: fallFromY,
@@ -210,16 +257,22 @@ export class FieldRenderer {
       falling,
       bounceFrame: -1,
       blinkFrames: 0,
-      nextBlinkIn: randomBlinkDelay(),
+      blinkIsWink: false,
+      winkEye: 'L',
+      nextBlinkIn: randomDelay(IDLE_BLINK_AVG_INTERVAL),
+      lookFrames: 0,
+      lookDir: 0,
+      lookDirY: 0,
+      nextLookIn: randomDelay(LOOK_AVG_INTERVAL),
     };
-    const entry: BoardEntry = { sprite, snap };
+    const entry: BoardEntry = { container, sprite, leftEyelid, rightEyelid, snap };
     this.applyVisualState(entry, spec);
     return entry;
   }
 
   private updateExistingBoardSprite(entry: BoardEntry, spec: FieldSprite): void {
     entry.sprite.texture = this.sheet.get(spec.cellKind, spec.connections);
-    entry.sprite.x = spec.x;
+    entry.container.x = spec.x;
     if (entry.snap.targetY !== spec.y) {
       entry.snap.targetY = spec.y;
       entry.snap.falling = entry.snap.displayY < spec.y;
@@ -227,6 +280,7 @@ export class FieldRenderer {
     }
     this.tickFall(entry);
     this.tickIdleBlink(entry);
+    this.tickLookAround(entry);
     this.applyVisualState(entry, spec);
   }
 
@@ -238,10 +292,10 @@ export class FieldRenderer {
       if (snap.displayY >= snap.targetY) {
         snap.displayY = snap.targetY;
         snap.falling = false;
-        snap.bounceFrame = 0; // trigger bounce
+        snap.bounceFrame = 0;
       }
     }
-    entry.sprite.y = snap.displayY;
+    entry.container.y = snap.displayY;
 
     if (snap.bounceFrame >= 0 && snap.bounceFrame < BOUNCE_FRAMES) {
       snap.bounceFrame += 1;
@@ -250,7 +304,6 @@ export class FieldRenderer {
     }
   }
 
-  /** Idle eye-blink timer. Slightly randomised so puyos don't sync up. */
   private tickIdleBlink(entry: BoardEntry): void {
     const { snap } = entry;
     if (snap.blinkFrames > 0) {
@@ -261,13 +314,51 @@ export class FieldRenderer {
     snap.nextBlinkIn -= 1;
     if (snap.nextBlinkIn <= 0) {
       snap.blinkFrames = IDLE_BLINK_FRAMES;
-      snap.nextBlinkIn = randomBlinkDelay();
+      // 35% of idle events are a one-eyed wink, 65% a regular blink.
+      snap.blinkIsWink = Math.random() < 0.35;
+      snap.winkEye = Math.random() < 0.5 ? 'L' : 'R';
+      snap.nextBlinkIn = randomDelay(IDLE_BLINK_AVG_INTERVAL);
+    }
+  }
+
+  private tickLookAround(entry: BoardEntry): void {
+    const { snap } = entry;
+    if (snap.lookFrames > 0) {
+      snap.lookFrames -= 1;
+      return;
+    }
+    if (snap.falling || snap.bounceFrame >= 0 || snap.blinkFrames > 0) return;
+    snap.nextLookIn -= 1;
+    if (snap.nextLookIn <= 0) {
+      snap.lookFrames = LOOK_FRAMES;
+      // Random of 4 cardinal directions.
+      const r = Math.floor(Math.random() * 4);
+      switch (r) {
+        case 0:
+          snap.lookDir = -1;
+          snap.lookDirY = 0;
+          break;
+        case 1:
+          snap.lookDir = 1;
+          snap.lookDirY = 0;
+          break;
+        case 2:
+          snap.lookDir = 0;
+          snap.lookDirY = -1;
+          break;
+        case 3:
+          snap.lookDir = 0;
+          snap.lookDirY = 1;
+          break;
+      }
+      snap.nextLookIn = randomDelay(LOOK_AVG_INTERVAL);
     }
   }
 
   /**
-   * Combined scale + alpha calc per frame. Order of application:
-   *   base × bounce × pop × blink
+   * Per-frame visual state. Updates body scale (for pop/bounce),
+   * alpha (for pop translucency), and eye overlays (for blink/wink/
+   * look-around).
    */
   private applyVisualState(entry: BoardEntry, spec: FieldSprite): void {
     const s = entry.sprite;
@@ -275,43 +366,79 @@ export class FieldRenderer {
     let scaleY = BASE_SCALE;
     let alpha = 1;
 
-    // Pop: grow-then-shrink + fade + rapid blink.
+    // Pop: longer-lasting transparency + rapid blink between visible
+    // and dim, then a final fade-out at the very end.
     if (spec.popProgress !== undefined && spec.popProgress > 0) {
       const p = Math.min(1, spec.popProgress);
-      const popScale =
-        p < 0.35 ? 1 + (p / 0.35) * 0.25 : Math.max(0, 1.25 - ((p - 0.35) / 0.65) * 1.25);
+      // Subtle scale pulse — much smaller than before so the puyo
+      // mostly stays in place while it flickers and fades.
+      const popScale = p < 0.5 ? 1 + p * 0.15 : Math.max(0, 1.075 - (p - 0.5) * 1.6);
       scaleX *= popScale;
       scaleY *= popScale;
-      alpha *= Math.max(0, 1 - p * 1.2);
-      // Rapid-blink: alternate full/dim alpha every few frames.
-      const blinkPhase = Math.floor((p * (15 / POP_BLINK_PERIOD)) % 2);
-      if (blinkPhase === 1) alpha *= 0.25;
+      // Base translucency throughout the pop (≥ ~0.5 visible).
+      let popAlpha = 0.55;
+      // Rapid blink: dim phase reaches ~15% alpha.
+      const blinkPhase = Math.floor((p * 30) % 2);
+      if (blinkPhase === 1) popAlpha = 0.15;
+      // Final fade to invisible in the last 25% of the pop.
+      if (p > 0.75) popAlpha *= 1 - (p - 0.75) / 0.25;
+      alpha *= popAlpha;
     }
 
-    // Bounce: quick vertical squish + recovery after landing.
+    // Bounce: short squish on impact.
     if (entry.snap.bounceFrame >= 0 && entry.snap.bounceFrame < BOUNCE_FRAMES) {
-      const t = entry.snap.bounceFrame / BOUNCE_FRAMES; // 0..1
-      // Parabolic easing: squashY goes 1 → 0.78 → 1; width goes 1 → 1.12 → 1
+      const t = entry.snap.bounceFrame / BOUNCE_FRAMES;
       const bend = Math.sin(t * Math.PI);
       scaleX *= 1 + 0.12 * bend;
       scaleY *= 1 - 0.22 * bend;
     }
 
-    // Idle blink: quick squint on the Y axis.
-    if (entry.snap.blinkFrames > 0) {
-      const t = 1 - entry.snap.blinkFrames / IDLE_BLINK_FRAMES;
-      const bend = Math.sin(t * Math.PI);
-      scaleY *= 1 - 0.45 * bend;
-    }
-
     s.scale.set(scaleX, scaleY);
-    s.alpha = alpha;
+    entry.container.alpha = alpha;
+
+    // Eye overlays. The body is drawn first, then we overlay eyelids
+    // when blinking — the body itself never squashes for a blink.
+    const blinking = entry.snap.blinkFrames > 0;
+    const isWink = blinking && entry.snap.blinkIsWink;
+    const winkSide = entry.snap.winkEye;
+    entry.leftEyelid.visible = blinking && (!isWink || winkSide === 'L');
+    entry.rightEyelid.visible = blinking && (!isWink || winkSide === 'R');
+
+    // Pupil-style look: nudge eyelid sprites (acting as dark dots) in
+    // the look direction when no blink is active. This is a subtle
+    // hint of the puyo "glancing" somewhere and back.
+    if (!blinking && entry.snap.lookFrames > 0) {
+      const dx = entry.snap.lookDir * 1.5;
+      const dy = entry.snap.lookDirY * 1.5;
+      entry.leftEyelid.visible = true;
+      entry.rightEyelid.visible = true;
+      // For look mode, eyelid graphics are drawn smaller — like a pupil.
+      entry.leftEyelid.scale.set(0.45);
+      entry.rightEyelid.scale.set(0.45);
+      entry.leftEyelid.x = -EYE_OFFSET_X + dx;
+      entry.leftEyelid.y = EYE_OFFSET_Y + dy;
+      entry.rightEyelid.x = EYE_OFFSET_X + dx;
+      entry.rightEyelid.y = EYE_OFFSET_Y + dy;
+    } else {
+      entry.leftEyelid.scale.set(1);
+      entry.rightEyelid.scale.set(1);
+      entry.leftEyelid.x = -EYE_OFFSET_X;
+      entry.leftEyelid.y = EYE_OFFSET_Y;
+      entry.rightEyelid.x = EYE_OFFSET_X;
+      entry.rightEyelid.y = EYE_OFFSET_Y;
+    }
   }
 
   /**
    * If the spec looks like a new same-color cell that just appeared
    * lower than a now-gone sprite in the same column, return that
    * source's id so we can hand off its displayed y for the fall.
+   *
+   * Picks the LOWEST available source above the new cell so that
+   * stacked falls preserve the original vertical order — the cell
+   * originally on top stays on top, fall distances scale with the
+   * pre-gravity gap, and uniform pixel-per-frame speed keeps the
+   * stack moving as a single unit.
    */
   private findFallSource(spec: FieldSprite): string | null {
     const m = /^cell:(\d+):(\d+)$/.exec(spec.id);
@@ -319,7 +446,7 @@ export class FieldRenderer {
     const x = Number(m[1]);
     const y = Number(m[2]);
     let bestSourceId: string | null = null;
-    let bestY = -1;
+    let bestY = Number.POSITIVE_INFINITY;
     for (const [id, entry] of this.boardSprites) {
       if (!id.startsWith(`cell:${x}:`)) continue;
       if (entry.snap.kind !== spec.cellKind) continue;
@@ -327,7 +454,7 @@ export class FieldRenderer {
       if (!m2) continue;
       const sourceY = Number(m2[1]);
       if (sourceY <= y) continue;
-      if (sourceY > bestY) {
+      if (sourceY < bestY) {
         bestY = sourceY;
         bestSourceId = id;
       }
@@ -358,22 +485,25 @@ export class FieldRenderer {
   // ----------------------------------------------------------------
 
   private emitBurst(x: number, y: number, color: number): void {
-    const count = 6;
+    const count = 10;
+    const life = 30;
     for (let i = 0; i < count; i++) {
+      // Particles are drawn at radius 1 and scaled per-frame via the
+      // size ramp curve; that way one Graphics buffer suffices.
       const g = new Graphics();
-      g.circle(0, 0, 3);
+      g.circle(0, 0, 1);
       g.fill({ color, alpha: 1 });
       g.x = x;
       g.y = y;
       this.burstLayer.addChild(g);
-      const angle = (i / count) * Math.PI * 2 + Math.random() * 0.6;
-      const speed = 3 + Math.random() * 2;
+      const angle = (i / count) * Math.PI * 2 + Math.random() * 0.4 - 0.2;
+      const speed = 4 + Math.random() * 2.5;
       this.particles.push({
         graphic: g,
         vx: Math.cos(angle) * speed,
-        vy: Math.sin(angle) * speed - 1.5,
-        life: 18,
-        maxLife: 18,
+        vy: Math.sin(angle) * speed - 2,
+        life,
+        maxLife: life,
       });
     }
   }
@@ -383,9 +513,15 @@ export class FieldRenderer {
       const p = this.particles[i] as Particle;
       p.graphic.x += p.vx;
       p.graphic.y += p.vy;
-      p.vy += 0.25; // gravity
+      p.vy += 0.18; // gravity drag
+
       p.life -= 1;
-      p.graphic.alpha = p.life / p.maxLife;
+      const t = 1 - p.life / p.maxLife; // 0..1 across the lifetime
+      // Size ramp: small → big → small. Bell curve via sin(πt).
+      const ramp = Math.sin(t * Math.PI);
+      const peak = 12; // px max radius
+      p.graphic.scale.set(2 + peak * ramp);
+      p.graphic.alpha = Math.min(1, ramp * 1.4);
       if (p.life <= 0) {
         this.burstLayer.removeChild(p.graphic);
         p.graphic.destroy();
@@ -542,10 +678,16 @@ export class FieldRenderer {
 function makeSprite(texture: Texture): Sprite {
   const s = new Sprite(texture);
   s.anchor.set(0.5);
-  // Use scale (not width/height) so that downstream scale.set() calls
-  // multiply the base rather than reset it.
   s.scale.set(BASE_SCALE);
   return s;
+}
+
+/** Two-pixel-tall dark eyelid graphic, drawn centered. */
+function makeEyelid(): Graphics {
+  const g = new Graphics();
+  g.rect(-EYE_W / 2, -EYE_H / 2, EYE_W, EYE_H);
+  g.fill(EYELID_COLOR);
+  return g;
 }
 
 function easeOutCubic(t: number): number {
@@ -560,8 +702,11 @@ function pickShortTarget(from: number, naiveTarget: number): number {
   return from + delta;
 }
 
-function randomBlinkDelay(): number {
-  // Poisson-ish: uniform 0.5x..1.5x of the mean, per-puyo random offset.
+/**
+ * Pseudo-Poisson per-puyo offset (uniform 0.5x..1.5x of the mean) so
+ * adjacent puyos don't blink/look in lockstep.
+ */
+function randomDelay(meanFrames: number): number {
   const jitter = 0.5 + Math.random();
-  return Math.floor(IDLE_BLINK_AVG_INTERVAL * jitter);
+  return Math.floor(meanFrames * jitter);
 }
