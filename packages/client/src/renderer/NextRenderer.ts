@@ -54,8 +54,11 @@ export class NextRenderer {
     if (!player) return;
     const baseIndex = player.dropQueueIndex;
 
+    // `dropQueueIndex` is the index of the NEXT piece to spawn —
+    // i.e., what *will* drop after the current piece locks. So the
+    // panel slots map directly to (baseIndex + 0, +1, +2).
     for (let i = 0; i < 3; i++) {
-      const pair = match.dropQueue[baseIndex + i + 1];
+      const pair = match.dropQueue[baseIndex + i];
       const sprites = this.slotSprites[i];
       const slot = this.slots[i];
       if (!slot || !sprites) continue;
