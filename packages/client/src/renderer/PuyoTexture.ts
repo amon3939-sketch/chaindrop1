@@ -15,8 +15,12 @@
 import type { PuyoColor } from '@chaindrop/shared';
 import { Assets, Rectangle, Texture } from 'pixi.js';
 
-/** Asset path, relative to Vite's base. */
-export const PUYO_SHEET_PATH = 'assets/puyo/puyo_sozai.png';
+/**
+ * Asset path, relative to Vite's base. The `_v3` suffix forces a fresh
+ * fetch when we ship asset edits — `public/` files keep their URL across
+ * builds, so the only reliable cache-bust is a filename bump.
+ */
+export const PUYO_SHEET_PATH = 'assets/puyo/puyo_sozai_v3.png';
 
 /** Pixel size of a single cell in the sprite sheet. */
 export const SHEET_CELL = 32;
