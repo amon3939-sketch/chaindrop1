@@ -17,14 +17,34 @@ import { BOARD_HEIGHT, BOARD_WIDTH, type Board, type Cell } from './board';
  * Mutates `board` in place. Returns `true` if any cell moved.
  */
 export function applyGravity(board: Board): boolean {
+  return applyGravityWithFall(board).changed;
+}
+
+export interface GravityResult {
+  changed: boolean;
+  /** Largest single-cell fall distance (in board cells) across all columns. */
+  maxFall: number;
+}
+
+/**
+ * Same as `applyGravity`, but also reports the longest distance any
+ * single cell fell. The caller uses this to size the visual settle
+ * window so chain ticks don't fire while puyos are still mid-air.
+ */
+export function applyGravityWithFall(board: Board): GravityResult {
   let changed = false;
+  let maxFall = 0;
   for (let x = 0; x < BOARD_WIDTH; x++) {
-    // Collect non-empty cells from bottom to top.
+    // Collect non-empty cells (bottom→top) along with their original y.
     const stack: Cell[] = [];
+    const sourceY: number[] = [];
     for (let y = 0; y < BOARD_HEIGHT; y++) {
       const row = board.cells[y] as Cell[];
       const cell = row[x] as Cell;
-      if (cell.kind !== null) stack.push(cell);
+      if (cell.kind !== null) {
+        stack.push(cell);
+        sourceY.push(y);
+      }
     }
     // Write them back, padding the top with empty cells.
     for (let y = 0; y < BOARD_HEIGHT; y++) {
@@ -32,10 +52,14 @@ export function applyGravity(board: Board): boolean {
       const current = row[x] as Cell;
       const next = y < stack.length ? (stack[y] as Cell) : { kind: null };
       if (current.kind !== next.kind) changed = true;
+      if (y < stack.length) {
+        const fall = (sourceY[y] as number) - y;
+        if (fall > maxFall) maxFall = fall;
+      }
       row[x] = next;
     }
   }
-  return changed;
+  return { changed, maxFall };
 }
 
 /**

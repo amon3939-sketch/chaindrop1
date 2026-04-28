@@ -5,6 +5,7 @@ import {
   COUNTDOWN_FRAMES,
   DEAD_FRAMES,
   type MatchState,
+  POST_FALL_SETTLE_FRAMES,
   RESOLVE_TICK_FRAMES,
   WAIT_GARBAGE_FRAMES,
   advanceFrame,
@@ -302,13 +303,18 @@ describe('waitGarbage phase', () => {
 // --------------------------------------------------------------
 
 describe('chigiri phase', () => {
-  it('runs for exactly 12 frames then transitions to resolving', () => {
+  it('waits the pre-gravity hold then a post-fall settle before resolving', () => {
+    // The test forces chigiri on an empty board, so gravity moves no
+    // cells and `maxFall` is 0. The phase still pads the post-gravity
+    // window by `POST_FALL_SETTLE_FRAMES` so any in-flight bounce can
+    // finish — total length = CHIGIRI_FRAMES + POST_FALL_SETTLE_FRAMES.
     const match = createMatchState({ seed: 1, colorMode: 4, players: [{ id: 'A' }] });
     const p = match.players[0]!;
     p.phase = 'chigiri';
     p.phaseFrame = 0;
 
-    for (let i = 0; i < CHIGIRI_FRAMES - 1; i++) {
+    const totalChigiriLength = CHIGIRI_FRAMES + POST_FALL_SETTLE_FRAMES;
+    for (let i = 0; i < totalChigiriLength - 1; i++) {
       advanceFrame(match);
       expect(p.phase).toBe('chigiri');
     }

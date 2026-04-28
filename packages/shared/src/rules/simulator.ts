@@ -33,7 +33,7 @@ import {
   placeOjama,
   selectTarget,
 } from './garbage';
-import { applyGravity, hasFloatingCells } from './gravity';
+import { applyGravityWithFall, hasFloatingCells } from './gravity';
 import { type Piece, createPiece, getChildPos } from './piece';
 import { Xorshift32 } from './rng';
 import { tryMove, tryRotate } from './rotate';
@@ -46,20 +46,34 @@ import { trySpawn } from './spawn';
 // initial 30f (0.5s) baseline based on playtest feel.
 export const FALL_INTERVAL_NORMAL = 36;
 export const FALL_INTERVAL_SOFT = 2;
-export const LOCK_DELAY_FRAMES = 15;
+// 18 frames = 0.3s at 60fps. The grace window between a piece touching
+// the ground and locking — gives the player a beat to slide it sideways.
+export const LOCK_DELAY_FRAMES = 18;
 export const LOCK_RESET_LIMIT = 8;
-// Chigiri (split-drop) phase. Long enough for a tall column to be
-// visibly seen falling at the renderer's gravity-fall speed.
+// Per-cell visual fall time. Mirrors the renderer's FALL_SPEED
+// (CELL_SIZE / 5 = 8 px/frame) — keep in sync if either is tuned.
+export const FALL_FRAMES_PER_CELL = 5;
+// Frames to hold after a fall lands so the bounce/squish animation can
+// finish before the next chain tick or the next piece spawns.
+export const POST_FALL_SETTLE_FRAMES = 8;
+// Chigiri (split-drop) phase. The piece sits at its locked position
+// for this many frames before gravity is applied; after gravity, the
+// phase extends by `maxFall * FALL_FRAMES_PER_CELL + POST_FALL_SETTLE`
+// so the visual fall is always allowed to complete before resolving.
 export const CHIGIRI_FRAMES = 40;
-// One chain tick in frames. Covers the full clear animation cycle
-// (pop → collapse). Stretched to give the pop a long, readable window.
+// One chain tick in frames. Pop animation runs from frame 0 to
+// POP_FRAMES; gravity fires at POP_FRAMES. The remaining frames cover
+// the visible fall — the tick stretches dynamically per
+// `applyChainTick`'s reported `maxFall` so that even tall collapses
+// finish before the next pop check.
 export const RESOLVE_TICK_FRAMES = 60;
 // Sub-phase split inside a resolve tick:
 //   0..POP_FRAMES-1      pop animation (cells still on the board)
 //   at POP_FRAMES        clusters cleared, ojama swept, gravity applied
-//   POP_FRAMES..RESOLVE  renderer shows the settled board but animates
-//                        the fall of the cells that just moved
+//   POP_FRAMES..tickEnd  renderer animates the fall + bounce
 export const POP_FRAMES = 32;
+// 18 frames = 0.3s at 60fps. Always-on breather between resolving and
+// the next spawn so the field state is readable.
 export const WAIT_GARBAGE_FRAMES = 18;
 export const DEAD_FRAMES = 60;
 export const COUNTDOWN_FRAMES = 180;
@@ -107,6 +121,19 @@ interface ResolvingData {
   tickFrame: number;
   /** Set once `applyChainTick` has committed this tick's board changes. */
   applied?: boolean;
+  /**
+   * Effective end frame for this tick. Computed at apply-time from the
+   * gravity result so a long fall stretches the tick instead of having
+   * the next pop fire while puyos are still mid-air.
+   */
+  tickEndFrame?: number;
+}
+
+interface ChigiriData {
+  /** Whether gravity has already been applied this chigiri. */
+  applied: boolean;
+  /** End frame for the entire chigiri phase, including post-fall settle. */
+  endFrame: number;
 }
 
 export interface PlayerState {
@@ -132,6 +159,8 @@ export interface PlayerState {
   softDrop: boolean;
   // Resolving-phase transient state
   resolvingData: ResolvingData | null;
+  // Chigiri-phase transient state
+  chigiriData: ChigiriData | null;
 }
 
 // Structural check: PlayerState must satisfy TargetablePlayer so that
@@ -228,6 +257,7 @@ export function createMatchState(config: MatchConfig): MatchState {
     lockResets: 0,
     softDrop: false,
     resolvingData: null,
+    chigiriData: null,
   }));
 
   const startWithCountdown = config.startWithCountdown ?? false;
@@ -463,11 +493,19 @@ function onLock(match: MatchState, player: PlayerState): void {
 
 function handleChigiri(_match: MatchState, player: PlayerState): void {
   player.phaseFrame++;
-  if (player.phaseFrame >= CHIGIRI_FRAMES) {
-    // Commit gravity now and move on. The renderer will detect the
-    // change and animate the fall (its own clock continues across
-    // phase boundaries).
-    applyGravity(player.board);
+  if (!player.chigiriData) {
+    if (player.phaseFrame < CHIGIRI_FRAMES) return;
+    // First, commit gravity. Track the longest fall so the phase can
+    // be extended just enough for the visual fall to land before we
+    // hand off to resolving — without this, the next tick (or next
+    // spawn, when no chain follows) starts while puyos are mid-air.
+    const { maxFall } = applyGravityWithFall(player.board);
+    player.chigiriData = {
+      applied: true,
+      endFrame: player.phaseFrame + maxFall * FALL_FRAMES_PER_CELL + POST_FALL_SETTLE_FRAMES,
+    };
+  }
+  if (player.phaseFrame >= player.chigiriData.endFrame) {
     enterResolving(player);
   }
 }
@@ -477,6 +515,7 @@ function enterResolving(player: PlayerState): void {
   player.phaseFrame = 0;
   player.chainCount = 0;
   player.resolvingData = null;
+  player.chigiriData = null;
 }
 
 // ---------- resolving ----------
@@ -495,13 +534,20 @@ function handleResolving(match: MatchState, player: PlayerState): void {
 
   const data = player.resolvingData;
   data.tickFrame++;
-  // Apply the logical tick (clear + gravity + score) halfway through
-  // so the renderer can spend the second half animating the fall.
+  // Apply the logical tick (clear + gravity + score) at POP_FRAMES so
+  // the renderer spends the rest of the tick animating the fall.
   if (data.tickFrame === POP_FRAMES && !data.applied) {
-    applyChainTick(match, player, data.pendingClusters);
+    const maxFall = applyChainTick(match, player, data.pendingClusters);
     data.applied = true;
+    // Stretch this tick so the next pop can't fire until the longest
+    // fall has visually landed and bounced.
+    data.tickEndFrame = Math.max(
+      RESOLVE_TICK_FRAMES,
+      POP_FRAMES + maxFall * FALL_FRAMES_PER_CELL + POST_FALL_SETTLE_FRAMES,
+    );
   }
-  if (data.tickFrame < RESOLVE_TICK_FRAMES) return;
+  const tickEnd = data.tickEndFrame ?? RESOLVE_TICK_FRAMES;
+  if (data.tickFrame < tickEnd) return;
 
   // Safety net: make sure the tick has been applied even if constants
   // were changed to equal values.
@@ -515,7 +561,7 @@ function applyChainTick(
   match: MatchState,
   player: PlayerState,
   clusters: readonly Cluster[],
-): void {
+): number {
   // 1. Sweep ojama adjacent to popping cells (visible area only).
   const ojamaToClear = new Set<number>();
   for (const cluster of clusters) {
@@ -539,8 +585,9 @@ function applyChainTick(
     setCell(player.board, x, y, null);
   }
 
-  // 3. Gravity.
-  applyGravity(player.board);
+  // 3. Gravity. Track the longest fall so the caller can stretch the
+  //    tick window to cover the visible fall animation.
+  const { maxFall } = applyGravityWithFall(player.board);
 
   // 4. Chain counter.
   player.chainCount++;
@@ -579,6 +626,8 @@ function applyChainTick(
     sent,
     targetPlayerId: targetId,
   });
+
+  return maxFall;
 }
 
 function neighbors4(x: number, y: number): readonly [number, number][] {
