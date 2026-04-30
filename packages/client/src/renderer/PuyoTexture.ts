@@ -21,7 +21,7 @@ import { Assets, Rectangle, Texture } from 'pixi.js';
  * URL across builds, so the only reliable cache-bust is a filename
  * bump.
  */
-export const PUYO_SHEET_PATH = 'assets/puyo/puyo_sozai_v4.png';
+export const PUYO_SHEET_PATH = 'assets/puyo/puyo_sozai_v5.png';
 
 /** Pixel size of a single cell in the sprite sheet. */
 export const SHEET_CELL = 32;
