@@ -42,10 +42,18 @@ const BASE_SCALE = CELL_SIZE / SHEET_CELL; // 40 / 32 = 1.25
 const ROTATION_FRAMES = 6;
 /** Lerp factor for smoothed soft-drop descent (per render frame). */
 const SOFT_DROP_LERP = 0.35;
-/** Gravity-fall speed in pixels per render frame (uniform across columns). */
-const FALL_SPEED = CELL_SIZE / 5; // 8 px/frame — slightly less than 1 cell per 5 frames.
-/** Duration of the post-fall gummy bounce, in render frames. */
-const BOUNCE_FRAMES = 8;
+/**
+ * Gravity-fall speed in pixels per render frame (uniform across columns).
+ * Stays in sync with the simulator's `FALL_FRAMES_PER_CELL = 5` so that
+ * the resolve / chigiri tick windows correctly cover the visible fall.
+ */
+const FALL_SPEED = CELL_SIZE / 5; // 8 px/frame — 1 cell per 5 frames.
+/**
+ * Duration of the post-fall gummy bounce, in render frames. A longer
+ * window with a softer scale gives the impact a "mochi" squish — slow
+ * push down, then easing back — instead of a sharp pop.
+ */
+const BOUNCE_FRAMES = 14;
 /** Average frames between idle-blink attempts per puyo. */
 const IDLE_BLINK_AVG_INTERVAL = 240; // ~4s at 60fps
 /** How long one idle blink lasts. */
@@ -220,7 +228,6 @@ export class FieldRenderer {
 
   private createBoardSprite(spec: FieldSprite): BoardEntry {
     const container = new Container();
-    const sprite = makeSprite(this.sheet.get(spec.cellKind, spec.connections));
     const leftEyelid = makeEyelid();
     leftEyelid.x = -EYE_OFFSET_X;
     leftEyelid.y = EYE_OFFSET_Y;
@@ -229,25 +236,44 @@ export class FieldRenderer {
     rightEyelid.x = EYE_OFFSET_X;
     rightEyelid.y = EYE_OFFSET_Y;
     rightEyelid.visible = false;
-    container.addChild(sprite);
-    container.addChild(leftEyelid);
-    container.addChild(rightEyelid);
 
     container.x = spec.x;
 
     let fallFromY = spec.y;
     let falling = false;
+    let inheritedTexture: Texture | null = null;
     const sourceId = this.findFallSource(spec);
     if (sourceId) {
       const source = this.boardSprites.get(sourceId);
       if (source) {
         fallFromY = source.snap.displayY;
         falling = fallFromY < spec.y;
+        // Carry the source sprite's texture forward — the textures are
+        // shared `Texture` references owned by `PuyoSheet`, so it stays
+        // valid after the source container is destroyed below. Using
+        // it during the fall makes a stack-of-3 keep its fused (UD)
+        // appearance, and a solo chigiri puyo keep its solo shape,
+        // until the cell actually lands.
+        inheritedTexture = source.sprite.texture;
         this.spriteLayer.removeChild(source.container);
         source.container.destroy({ children: true });
         this.boardSprites.delete(sourceId);
       }
     }
+
+    // While airborne, do NOT use spec.connections — those describe the
+    // landing cell's neighbours, and adopting them mid-fall would let
+    // the body shape mutate before contact. Inherit the source sprite's
+    // texture (its connection state at the moment of separation); fall
+    // back to no-connection only when there is no source.
+    const initialTexture =
+      falling && inheritedTexture !== null
+        ? inheritedTexture
+        : this.sheet.get(spec.cellKind, falling ? undefined : spec.connections);
+    const sprite = makeSprite(initialTexture);
+    container.addChild(sprite);
+    container.addChild(leftEyelid);
+    container.addChild(rightEyelid);
 
     container.y = fallFromY;
     const snap: CellSnapshot = {
@@ -271,14 +297,22 @@ export class FieldRenderer {
   }
 
   private updateExistingBoardSprite(entry: BoardEntry, spec: FieldSprite): void {
-    entry.sprite.texture = this.sheet.get(spec.cellKind, spec.connections);
     entry.container.x = spec.x;
     if (entry.snap.targetY !== spec.y) {
       entry.snap.targetY = spec.y;
       entry.snap.falling = entry.snap.displayY < spec.y;
       entry.snap.bounceFrame = -1;
+      // Don't touch the texture here — keep whatever connection state
+      // the cell already showed at the moment it started falling. The
+      // post-landing branch below swaps in the settled connection.
     }
     this.tickFall(entry);
+    // Only adopt the connection-aware sprite once the cell is settled
+    // — `tickFall` flips `falling` to false on the landing frame, so
+    // the texture swap reads as "click in" with the bounce.
+    if (!entry.snap.falling) {
+      entry.sprite.texture = this.sheet.get(spec.cellKind, spec.connections);
+    }
     this.tickIdleBlink(entry);
     this.tickLookAround(entry);
     this.applyVisualState(entry, spec);
@@ -385,12 +419,15 @@ export class FieldRenderer {
       alpha *= popAlpha;
     }
 
-    // Bounce: short squish on impact.
+    // Bounce: a slow mochi-squish on impact. Asymmetric curve — quick
+    // squish down on the way in, slow ease back out — so it reads like
+    // soft rice cake settling rather than a stiff pop.
     if (entry.snap.bounceFrame >= 0 && entry.snap.bounceFrame < BOUNCE_FRAMES) {
       const t = entry.snap.bounceFrame / BOUNCE_FRAMES;
-      const bend = Math.sin(t * Math.PI);
-      scaleX *= 1 + 0.12 * bend;
-      scaleY *= 1 - 0.22 * bend;
+      // Cube-root rise (fast) for t < 0.3, then a long ease-out tail.
+      const bend = t < 0.3 ? (t / 0.3) ** 0.5 : 1 - ((t - 0.3) / 0.7) ** 1.4;
+      scaleX *= 1 + 0.08 * bend;
+      scaleY *= 1 - 0.14 * bend;
     }
 
     s.scale.set(scaleX, scaleY);
@@ -519,8 +556,11 @@ export class FieldRenderer {
       const t = 1 - p.life / p.maxLife; // 0..1 across the lifetime
       // Size ramp: small → big → small. Bell curve via sin(πt).
       const ramp = Math.sin(t * Math.PI);
-      const peak = 12; // px max radius
-      p.graphic.scale.set(2 + peak * ramp);
+      // Peak radius reduced from 12 → 8.4px (70% of the original) and
+      // the base shrunk in proportion, per playtest feedback that the
+      // burst grains were overpowering the puyo silhouettes.
+      const peak = 8.4;
+      p.graphic.scale.set(1.4 + peak * ramp);
       p.graphic.alpha = Math.min(1, ramp * 1.4);
       if (p.life <= 0) {
         this.burstLayer.removeChild(p.graphic);
