@@ -101,15 +101,28 @@ describe('computeFieldSprites', () => {
   it('emits connection flags for same-color adjacent cells', () => {
     const match = createMatchState({ seed: 1, colorMode: 4, players: [{ id: 'A' }] });
     const p = match.players[0]!;
-    // Three reds in a row on y=0.
-    setCell(p.board, 0, 0, 'R');
-    setCell(p.board, 1, 0, 'R');
-    setCell(p.board, 2, 0, 'R');
+    // Three reds at y=1 so the floor-fusion rule (y=0 implicit down)
+    // doesn't enter the picture for this test.
+    setCell(p.board, 0, 1, 'R');
+    setCell(p.board, 1, 1, 'R');
+    setCell(p.board, 2, 1, 'R');
     const sprites = computeFieldSprites(p);
     const find = (x: number, y: number) => sprites.find((s) => s.id === `cell:${x}:${y}`)!;
-    expect(find(0, 0).connections).toEqual({ up: false, right: true, down: false, left: false });
-    expect(find(1, 0).connections).toEqual({ up: false, right: true, down: false, left: true });
-    expect(find(2, 0).connections).toEqual({ up: false, right: false, down: false, left: true });
+    expect(find(0, 1).connections).toEqual({ up: false, right: true, down: false, left: false });
+    expect(find(1, 1).connections).toEqual({ up: false, right: true, down: false, left: true });
+    expect(find(2, 1).connections).toEqual({ up: false, right: false, down: false, left: true });
+  });
+
+  it('treats the field floor as a same-color neighbour for the down direction', () => {
+    // The floor is "below" y=0 — in the original game the bottom row
+    // visually rests on the field frame, so puyos there get a D-extended
+    // texture and their bodies fill the cell to the bottom edge instead
+    // of leaving a rounded gap that exposes the dark background.
+    const match = createMatchState({ seed: 1, colorMode: 4, players: [{ id: 'A' }] });
+    const p = match.players[0]!;
+    setCell(p.board, 0, 0, 'R');
+    const sprite = computeFieldSprites(p).find((s) => s.id === 'cell:0:0')!;
+    expect(sprite.connections?.down).toBe(true);
   });
 
   it('does not bond with a different-color neighbour', () => {
