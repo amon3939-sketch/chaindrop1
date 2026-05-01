@@ -241,36 +241,26 @@ export class FieldRenderer {
 
     let fallFromY = spec.y;
     let falling = false;
-    let inheritedTexture: Texture | null = null;
     const sourceId = this.findFallSource(spec);
     if (sourceId) {
       const source = this.boardSprites.get(sourceId);
       if (source) {
         fallFromY = source.snap.displayY;
         falling = fallFromY < spec.y;
-        // Carry the source sprite's texture forward — the textures are
-        // shared `Texture` references owned by `PuyoSheet`, so it stays
-        // valid after the source container is destroyed below. Using
-        // it during the fall makes a stack-of-3 keep its fused (UD)
-        // appearance, and a solo chigiri puyo keep its solo shape,
-        // until the cell actually lands.
-        inheritedTexture = source.sprite.texture;
         this.spriteLayer.removeChild(source.container);
         source.container.destroy({ children: true });
         this.boardSprites.delete(sourceId);
       }
     }
 
-    // While airborne, do NOT use spec.connections — those describe the
-    // landing cell's neighbours, and adopting them mid-fall would let
-    // the body shape mutate before contact. Inherit the source sprite's
-    // texture (its connection state at the moment of separation); fall
-    // back to no-connection only when there is no source.
-    const initialTexture =
-      falling && inheritedTexture !== null
-        ? inheritedTexture
-        : this.sheet.get(spec.cellKind, falling ? undefined : spec.connections);
-    const sprite = makeSprite(initialTexture);
+    // While airborne — and during the post-landing bounce squish — the
+    // body must read as detached. Use the no-connection texture for the
+    // entire fall+bounce window; the settled connection-aware texture
+    // is swapped in by `updateExistingBoardSprite` only after the
+    // bounce frame counter has reset.
+    const sprite = makeSprite(
+      this.sheet.get(spec.cellKind, falling ? undefined : spec.connections),
+    );
     container.addChild(sprite);
     container.addChild(leftEyelid);
     container.addChild(rightEyelid);
@@ -302,15 +292,21 @@ export class FieldRenderer {
       entry.snap.targetY = spec.y;
       entry.snap.falling = entry.snap.displayY < spec.y;
       entry.snap.bounceFrame = -1;
-      // Don't touch the texture here — keep whatever connection state
-      // the cell already showed at the moment it started falling. The
-      // post-landing branch below swaps in the settled connection.
+      // Drop to a no-connection texture when a new fall starts. The
+      // body should look unattached for the whole fall AND the
+      // post-landing mochi bounce; only after the bounce settles does
+      // the cell click into its neighbours.
+      if (entry.snap.falling) {
+        entry.sprite.texture = this.sheet.get(spec.cellKind);
+      }
     }
     this.tickFall(entry);
-    // Only adopt the connection-aware sprite once the cell is settled
-    // — `tickFall` flips `falling` to false on the landing frame, so
-    // the texture swap reads as "click in" with the bounce.
-    if (!entry.snap.falling) {
+    // Adopt the connection-aware texture only once both the fall AND
+    // the bounce squish have finished. `tickFall` keeps `bounceFrame`
+    // in [0, BOUNCE_FRAMES) during the squish and resets it to -1 once
+    // the bounce settles — so `bounceFrame < 0 && !falling` means the
+    // puyo is fully at rest, the right moment to fuse with neighbours.
+    if (!entry.snap.falling && entry.snap.bounceFrame < 0) {
       entry.sprite.texture = this.sheet.get(spec.cellKind, spec.connections);
     }
     this.tickIdleBlink(entry);
