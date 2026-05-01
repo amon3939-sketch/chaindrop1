@@ -155,15 +155,10 @@ export function computeFieldSprites(player: PlayerState, alpha = 0): FieldSprite
  * Inspect the 4-connected neighbours of (x, y) and report which ones
  * share the same normal color. Only cells inside the visible area
  * count — cells in the hidden row or overflow buffer never form a
- * visual bond even if they happen to match colors.
- *
- * The floor (y = -1, "below the bottom row") is treated as fused for
- * the down direction. Without this, every puyo on the bottom row keeps
- * its rounded bottom edge, exposing the dark field background through
- * the empty cell corners — which reads as a thin black band along the
- * floor. Treating the floor as a same-color neighbour lets the cell
- * pick a D-extended texture (e.g. UR → UDR), so the body fills down
- * to the cell edge and visually rests on the field frame.
+ * visual bond even if they happen to match colors. The field frame
+ * (walls, floor) is NOT treated as fused: bottom-row puyos keep the
+ * standard rounded silhouette rather than extending into the floor
+ * bar.
  */
 function computeConnections(
   player: PlayerState,
@@ -174,7 +169,7 @@ function computeConnections(
   return {
     up: sameColorVisible(player, x, y + 1, color),
     right: sameColorVisible(player, x + 1, y, color),
-    down: y === 0 ? true : sameColorVisible(player, x, y - 1, color),
+    down: sameColorVisible(player, x, y - 1, color),
     left: sameColorVisible(player, x - 1, y, color),
   };
 }
