@@ -1,13 +1,22 @@
 /**
- * ChainDrop server entry point.
- * M0 scaffold: health check + placeholder Colyseus boot.
- * Full implementation per D6 §4 begins in M4.
+ * ChainDrop server entry point. See D6 §4.
+ *
+ * Boots a single Colyseus game server that hosts the always-on
+ * `lobby` room plus on-demand `match` rooms created via the
+ * matchmaker. The HTTP side serves `/healthz` and, when enabled, the
+ * Colyseus monitor under `/monitor`.
  */
 import { createServer } from 'node:http';
 import { PROTOCOL_VERSION } from '@chaindrop/shared';
+import { Server, matchMaker } from '@colyseus/core';
+import { monitor } from '@colyseus/monitor';
+import { WebSocketTransport } from '@colyseus/ws-transport';
 import cors from 'cors';
 import express from 'express';
+import basicAuth from 'express-basic-auth';
 import { config } from './config';
+import { LobbyRoom } from './rooms/LobbyRoom';
+import { MatchRoom } from './rooms/MatchRoom';
 import { logger } from './util/logger';
 
 const app = express();
@@ -27,8 +36,33 @@ app.get('/healthz', (_req, res) => {
   });
 });
 
+if (config.monitor.enabled) {
+  app.use(
+    '/monitor',
+    basicAuth({
+      users: { [config.monitor.user]: config.monitor.pass },
+      challenge: true,
+    }),
+    monitor(),
+  );
+}
+
 const httpServer = createServer(app);
 
-httpServer.listen(config.port, () => {
-  logger.info({ port: config.port, protocolVersion: PROTOCOL_VERSION }, 'server listening');
+const gameServer = new Server({
+  transport: new WebSocketTransport({ server: httpServer }),
 });
+
+gameServer.define('lobby', LobbyRoom);
+// `filterBy(['roomId'])` lets the client `joinById(roomId)` and have
+// Colyseus route to the MatchRoom whose `onCreate` set this exact id.
+gameServer.define('match', MatchRoom).filterBy(['roomId']);
+
+// Always have one LobbyRoom ready to greet incoming clients.
+matchMaker
+  .createRoom('lobby', {})
+  .then(() => logger.info('singleton LobbyRoom ready'))
+  .catch((err) => logger.error({ err }, 'failed to create LobbyRoom'));
+
+gameServer.listen(config.port);
+logger.info({ port: config.port, protocolVersion: PROTOCOL_VERSION }, 'server listening');

@@ -16,6 +16,7 @@
     "@chaindrop/shared": "workspace:*",
     "@colyseus/core": "^0.16.0",
     "@colyseus/monitor": "^0.16.0",
+    "@colyseus/schema": "^4.0.25",
     "@colyseus/ws-transport": "^0.16.0",
     "colyseus": "^0.16.0",
     "cors": "^2.8.5",
