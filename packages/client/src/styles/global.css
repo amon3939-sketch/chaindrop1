@@ -239,3 +239,148 @@ button {
   transform: translateY(-1px);
   outline: none;
 }
+
+/* -------------------------------- Lobby -------------------------------- */
+
+.lobby-scene,
+.match-lobby-scene {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 20px;
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 32px 24px;
+  color: #f0f0f5;
+}
+
+.lobby-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.lobby-header h2 {
+  margin: 0;
+  font-size: 1.4rem;
+  letter-spacing: 0.05em;
+}
+
+.lobby-back {
+  background: transparent;
+  color: #c8c8d8;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 999px;
+  padding: 0.4rem 0.9rem;
+  font-size: 0.85rem;
+}
+
+.lobby-connect,
+.lobby-create {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  padding: 16px;
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 12px;
+}
+
+.lobby-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.85rem;
+  color: #aab;
+}
+
+.lobby-field input,
+.lobby-field select {
+  background: #0c0c1f;
+  color: #f0f0f5;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 0.95rem;
+}
+
+.lobby-rooms h3 {
+  margin: 0 0 8px;
+  font-size: 1rem;
+  letter-spacing: 0.05em;
+  color: #aab;
+}
+
+.lobby-rooms ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.lobby-rooms li {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 12px;
+  align-items: center;
+  padding: 10px 14px;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 8px;
+}
+
+.lobby-room-name {
+  font-weight: 600;
+}
+
+.lobby-room-meta {
+  font-size: 0.8rem;
+  color: #aab;
+}
+
+.lobby-empty {
+  color: #889;
+  font-style: italic;
+}
+
+.lobby-error {
+  color: #ff7a8a;
+  background: rgba(255, 80, 100, 0.1);
+  border: 1px solid rgba(255, 80, 100, 0.4);
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 0.9rem;
+}
+
+.match-lobby-players {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.match-lobby-players li {
+  display: grid;
+  grid-template-columns: 40px 1fr auto;
+  gap: 12px;
+  align-items: center;
+  padding: 10px 14px;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 8px;
+}
+
+.match-lobby-countdown {
+  font-size: 1.4rem;
+  color: #ffd60a;
+  text-align: center;
+}
+
+.match-lobby-running {
+  padding: 16px;
+  background: rgba(255, 214, 10, 0.08);
+  border: 1px solid rgba(255, 214, 10, 0.3);
+  border-radius: 12px;
+}
