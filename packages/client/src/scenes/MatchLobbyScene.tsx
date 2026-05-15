@@ -1,36 +1,60 @@
 /**
- * MatchLobbyScene — placeholder waiting room a player sees after
- * joining a match. M3a stops at the point MATCH_BEGIN arrives; the
- * full networked match scene (input forwarding, simulator sync) is
- * M3b. Until then we just acknowledge the start and display a stub.
+ * MatchLobbyScene — the room a player sits in after joining a match
+ * but before the simulator starts. Once MATCH_START arrives we
+ * hand the live Colyseus Room handle, along with the seed / dropQueue
+ * / playerOrder, to `NetworkedMatchScene` via the `onMatchStart`
+ * prop. The room is NOT `leave()`d on that handoff — the networked
+ * match scene needs it for INPUT / INPUT_BATCH / STATE_HASH.
  */
 
 import type { MatchPlayer } from '@chaindrop/shared/protocol';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { type MatchRoomHandle, colyseus, onMatchMessage } from '../network/colyseusClient';
 
+export interface MatchStartPayload {
+  room: MatchRoomHandle;
+  myPlayerId: string;
+  playerOrder: string[];
+  seed: number;
+  colorMode: 4 | 5;
+  dropQueue: ReadonlyArray<readonly [string, string]>;
+  nicknamesByPlayerId: Record<string, string>;
+}
+
 interface Props {
   roomId: string;
   nickname: string;
   characterId?: string;
   onLeave: () => void;
+  onMatchStart: (payload: MatchStartPayload) => void;
 }
 
 type Phase = 'connecting' | 'lobby' | 'countdown' | 'running';
 
-export function MatchLobbyScene({ roomId, nickname, characterId = 'default', onLeave }: Props) {
+export function MatchLobbyScene({
+  roomId,
+  nickname,
+  characterId = 'default',
+  onLeave,
+  onMatchStart,
+}: Props) {
   const [phase, setPhase] = useState<Phase>('connecting');
   const [players, setPlayers] = useState<MatchPlayer[]>([]);
   const [capacity, setCapacity] = useState<number>(2);
+  const [colorMode, setColorMode] = useState<4 | 5>(4);
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [countdownMs, setCountdownMs] = useState<number | null>(null);
   const roomRef = useRef<MatchRoomHandle | null>(null);
+  /** Set to true once we hand the room off to NetworkedMatchScene so
+   *  the unmount cleanup doesn't `leave()` the room behind its back. */
+  const handedOff = useRef(false);
+  const playersRef = useRef<MatchPlayer[]>([]);
 
   const leave = useCallback(async () => {
     const room = roomRef.current;
     roomRef.current = null;
-    if (room) {
+    if (room && !handedOff.current) {
       try {
         await room.leave();
       } catch {
@@ -56,17 +80,14 @@ export function MatchLobbyScene({ roomId, nickname, characterId = 'default', onL
         roomRef.current = room;
         setPhase('lobby');
 
-        // Room state lives in `MATCH_ROOM_STATE` messages the server
-        // broadcasts whenever the player roster, config, or status
-        // changes (see server/src/rooms/state.ts for the rationale
-        // behind hand-rolling state sync instead of relying on the
-        // Colyseus schema patch stream).
         onMatchMessage(room, (msg) => {
           switch (msg.t) {
             case 'MATCH_ROOM_STATE': {
               const sorted = [...msg.players].sort((a, b) => a.slotIndex - b.slotIndex);
               setPlayers(sorted);
+              playersRef.current = sorted;
               setCapacity(msg.config.capacity);
+              setColorMode(msg.config.colorMode);
               if (msg.status === 'lobby') setPhase('lobby');
               if (msg.status === 'countdown') setPhase('countdown');
               if (msg.status === 'running') setPhase('running');
@@ -80,13 +101,26 @@ export function MatchLobbyScene({ roomId, nickname, characterId = 'default', onL
               setPhase('lobby');
               setCountdownMs(null);
               break;
-            case 'MATCH_START':
+            case 'MATCH_START': {
               setPhase('running');
               setCountdownMs(null);
-              // M3b: hand this seed + dropQueue + playerOrder to the
-              // networked match scene. For now we just acknowledge.
+              // Acknowledge — the server doesn't currently gate on
+              // this, but it'll matter for M3c reconnect flows.
               room.send('MATCH_ACK', {});
+              const nicknamesByPlayerId: Record<string, string> = {};
+              for (const p of playersRef.current) nicknamesByPlayerId[p.playerId] = p.nickname;
+              handedOff.current = true;
+              onMatchStart({
+                room,
+                myPlayerId: room.sessionId,
+                playerOrder: [...msg.playerOrder],
+                seed: msg.seed,
+                colorMode,
+                dropQueue: msg.dropQueue,
+                nicknamesByPlayerId,
+              });
               break;
+            }
             case 'ERROR':
               setError(`${msg.code}: ${msg.message}`);
               break;
@@ -101,11 +135,11 @@ export function MatchLobbyScene({ roomId, nickname, characterId = 'default', onL
     return () => {
       cancelled = true;
       const room = roomRef.current;
-      if (room) {
+      if (room && !handedOff.current) {
         room.leave().catch(() => {});
       }
     };
-  }, [roomId, nickname, characterId]);
+  }, [roomId, nickname, characterId, onMatchStart, colorMode]);
 
   const toggleReady = useCallback(() => {
     const room = roomRef.current;
@@ -131,7 +165,7 @@ export function MatchLobbyScene({ roomId, nickname, characterId = 'default', onL
           <p className="match-lobby-status">
             {players.length} / {capacity} 人 · {phase === 'lobby' && '全員 READY で開始'}
             {phase === 'countdown' && 'カウントダウン中…'}
-            {phase === 'running' && 'マッチ進行中'}
+            {phase === 'running' && 'マッチ進行中…'}
           </p>
 
           <ul className="match-lobby-players">
@@ -167,10 +201,7 @@ export function MatchLobbyScene({ roomId, nickname, characterId = 'default', onL
 
           {phase === 'running' && (
             <div className="match-lobby-running">
-              <p>マッチ開始（M3b で実プレイ対応予定）</p>
-              <p>
-                seed と dropQueue は受信済み — クライアント側のゲームロジック実装は次のステップです
-              </p>
+              <p>対戦シーンへ遷移中…</p>
             </div>
           )}
         </>

@@ -17,6 +17,8 @@ import { generateDropQueue } from '@chaindrop/shared';
 import type { MatchPlayer, RoomSummary } from '@chaindrop/shared/protocol';
 import { matchC2S } from '@chaindrop/shared/protocol';
 import { type Client, Room } from '@colyseus/core';
+import { HashChecker } from '../match/HashChecker';
+import { InputRelay } from '../match/InputRelay';
 import { lobbyBus, matchRooms } from '../util/lobbyBus';
 import { logger } from '../util/logger';
 import { sanitizeNickname } from '../util/sanitize';
@@ -67,6 +69,9 @@ export class MatchRoom extends Room<MatchRoomState> {
   private countdownHandle: ReturnType<Room['clock']['setTimeout']> | undefined;
   private matchSeed = 0;
   private dropQueue: [string, string][] = [];
+  private playerOrder: string[] = [];
+  private inputRelay: InputRelay | undefined;
+  private hashChecker: HashChecker | undefined;
 
   override onCreate(opts: MatchCreateOptions): void {
     // Empty Schema state — the room still needs SOMETHING to satisfy
@@ -142,6 +147,8 @@ export class MatchRoom extends Room<MatchRoomState> {
   }
 
   override onDispose(): void {
+    this.inputRelay?.dispose();
+    this.hashChecker?.dispose();
     this.publishRemoval();
     logger.info({ roomId: this.roomIdValue }, 'MatchRoom disposed');
   }
@@ -198,10 +205,14 @@ export class MatchRoom extends Room<MatchRoomState> {
         this.onSetReady(client, msg.ready);
         return;
       case 'MATCH_ACK':
-        return; // M3b uses ACK to gate MATCH_BEGIN; harmless here.
+        // Could be used to gate MATCH_BEGIN — currently the server
+        // fires MATCH_BEGIN on a fixed timer, so this is a no-op.
+        return;
       case 'INPUT':
+        this.inputRelay?.submit(client.sessionId, msg.frame, msg.actions);
+        return;
       case 'STATE_HASH':
-        // INPUT relay and STATE_HASH desync detection are M3b.
+        this.hashChecker?.submit(client.sessionId, msg.frame, msg.hash);
         return;
       case 'PING':
         client.send('PONG', { clientMs: msg.clientMs, serverMs: Date.now() });
@@ -269,9 +280,25 @@ export class MatchRoom extends Room<MatchRoomState> {
       this.colorModeValue,
     ) as unknown as [string, string][];
 
-    const playerOrder = Array.from(this.players.values())
+    this.playerOrder = Array.from(this.players.values())
       .sort((a, b) => a.slotIndex - b.slotIndex)
       .map((p) => p.playerId);
+
+    this.inputRelay = new InputRelay({
+      playerOrder: this.playerOrder,
+      onBatchReady: (frame, inputs) => this.broadcast('INPUT_BATCH', { frame, inputs }),
+      onPlayerTimeout: (playerId) =>
+        // Mark the player as eliminated for now; M3c will replace this
+        // with a proper disconnect/reconnect flow.
+        this.broadcast('PLAYER_DISCONNECTED', { playerId, atFrame: 0 }),
+    });
+    this.hashChecker = new HashChecker({
+      playerOrder: this.playerOrder,
+      onMismatch: (frame, hashes) => {
+        logger.warn({ roomId: this.roomIdValue, frame, hashes }, 'desync detected');
+        this.broadcast('DESYNC_DETECTED', { frame, hashes });
+      },
+    });
 
     this.status = 'running';
     this.broadcastRoomState();
@@ -280,7 +307,7 @@ export class MatchRoom extends Room<MatchRoomState> {
     this.broadcast('MATCH_START', {
       seed: this.matchSeed,
       dropQueue: this.dropQueue,
-      playerOrder,
+      playerOrder: this.playerOrder,
       startFrameMs: Date.now() + MATCH_BEGIN_PADDING_MS,
     });
 

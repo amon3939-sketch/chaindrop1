@@ -514,3 +514,73 @@ button {
   font-size: 1.05rem;
   line-height: 1.6;
 }
+
+/* -------------------------- Networked match (VS) -------------------------- */
+
+.vs-overlay {
+  position: fixed;
+  top: 28px;
+  background: rgba(20, 20, 40, 0.72);
+  border: 1px solid rgba(255, 214, 10, 0.3);
+  border-radius: 12px;
+  padding: 14px 22px;
+  color: #f0f0f5;
+  pointer-events: none;
+  min-width: 200px;
+  text-align: center;
+}
+
+.vs-overlay-left {
+  left: 36px;
+}
+
+.vs-overlay-right {
+  right: 36px;
+}
+
+.vs-name {
+  font-size: 1.15rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: #ffd60a;
+  margin-bottom: 6px;
+}
+
+.vs-score {
+  font-size: 1.6rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.vs-chain {
+  font-size: 0.85rem;
+  color: #aab;
+  letter-spacing: 0.05em;
+  margin-top: 4px;
+}
+
+.vs-status-banner {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: rgba(20, 20, 40, 0.9);
+  border: 1px solid rgba(255, 214, 10, 0.5);
+  border-radius: 10px;
+  padding: 14px 28px;
+  font-size: 1.1rem;
+  color: #ffd60a;
+}
+
+.vs-quit {
+  position: fixed;
+  top: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: transparent;
+  color: #c8c8d8;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: 999px;
+  padding: 0.5rem 1.2rem;
+  font-size: 0.95rem;
+}

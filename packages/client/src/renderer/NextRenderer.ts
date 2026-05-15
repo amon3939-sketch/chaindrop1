@@ -49,8 +49,8 @@ export class NextRenderer {
     this.buildSlots();
   }
 
-  update(match: MatchState): void {
-    const player = match.players[0];
+  update(match: MatchState, playerIndex = 0): void {
+    const player = match.players[playerIndex];
     if (!player) return;
     const baseIndex = player.dropQueueIndex;
 
