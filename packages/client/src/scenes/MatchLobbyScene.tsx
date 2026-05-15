@@ -21,6 +21,7 @@ type Phase = 'connecting' | 'lobby' | 'countdown' | 'running';
 export function MatchLobbyScene({ roomId, nickname, characterId = 'default', onLeave }: Props) {
   const [phase, setPhase] = useState<Phase>('connecting');
   const [players, setPlayers] = useState<MatchPlayer[]>([]);
+  const [capacity, setCapacity] = useState<number>(2);
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [countdownMs, setCountdownMs] = useState<number | null>(null);
@@ -41,7 +42,6 @@ export function MatchLobbyScene({ roomId, nickname, characterId = 'default', onL
 
   useEffect(() => {
     let cancelled = false;
-    let interval: ReturnType<typeof setInterval> | undefined;
 
     (async () => {
       try {
@@ -56,29 +56,22 @@ export function MatchLobbyScene({ roomId, nickname, characterId = 'default', onL
         roomRef.current = room;
         setPhase('lobby');
 
-        // Mirror the schema-synced players map into React state on every
-        // change. We read the names off the schema directly to avoid
-        // having to thread protocol parsing through every patch.
-        const refreshPlayers = () => {
-          const state = room.state as { players?: Map<string, MatchPlayer> };
-          if (!state.players) return;
-          const list: MatchPlayer[] = [];
-          for (const p of state.players.values()) list.push({ ...p });
-          setPlayers(list);
-        };
-        refreshPlayers();
-        const state = room.state as {
-          players?: Map<string, MatchPlayer> & { onChange?: (cb: () => void) => void };
-        };
-        if (state.players && typeof state.players.onChange === 'function') {
-          state.players.onChange(refreshPlayers);
-        }
-        // Fall back to polling for environments where listening on the
-        // map isn't enough.
-        interval = setInterval(refreshPlayers, 500);
-
+        // Room state lives in `MATCH_ROOM_STATE` messages the server
+        // broadcasts whenever the player roster, config, or status
+        // changes (see server/src/rooms/state.ts for the rationale
+        // behind hand-rolling state sync instead of relying on the
+        // Colyseus schema patch stream).
         onMatchMessage(room, (msg) => {
           switch (msg.t) {
+            case 'MATCH_ROOM_STATE': {
+              const sorted = [...msg.players].sort((a, b) => a.slotIndex - b.slotIndex);
+              setPlayers(sorted);
+              setCapacity(msg.config.capacity);
+              if (msg.status === 'lobby') setPhase('lobby');
+              if (msg.status === 'countdown') setPhase('countdown');
+              if (msg.status === 'running') setPhase('running');
+              break;
+            }
             case 'COUNTDOWN_START':
               setPhase('countdown');
               setCountdownMs(Date.now() + (msg.durationFrames / 60) * 1000);
@@ -107,7 +100,6 @@ export function MatchLobbyScene({ roomId, nickname, characterId = 'default', onL
 
     return () => {
       cancelled = true;
-      if (interval) clearInterval(interval);
       const room = roomRef.current;
       if (room) {
         room.leave().catch(() => {});
@@ -136,20 +128,34 @@ export function MatchLobbyScene({ roomId, nickname, characterId = 'default', onL
 
       {phase !== 'connecting' && (
         <>
+          <p className="match-lobby-status">
+            {players.length} / {capacity} 人 · {phase === 'lobby' && '全員 READY で開始'}
+            {phase === 'countdown' && 'カウントダウン中…'}
+            {phase === 'running' && 'マッチ進行中'}
+          </p>
+
           <ul className="match-lobby-players">
-            {players.map((p) => (
-              <li key={p.playerId}>
-                <span>#{p.slotIndex}</span>
-                <span>{p.nickname}</span>
-                <span>{p.ready ? '✅ READY' : '…'}</span>
-              </li>
-            ))}
+            {Array.from({ length: capacity }, (_, slot) => {
+              const p = players.find((q) => q.slotIndex === slot);
+              return (
+                // biome-ignore lint/suspicious/noArrayIndexKey: each slot has a fixed position; rows never reorder, only their player changes
+                <li key={slot} className={p ? '' : 'empty'}>
+                  <span className="match-lobby-slot">#{slot + 1}</span>
+                  <span className="match-lobby-name">{p ? p.nickname : '募集中…'}</span>
+                  <span className="match-lobby-status-tag">
+                    {p ? (p.ready ? 'READY' : '待機') : '—'}
+                  </span>
+                </li>
+              );
+            })}
           </ul>
 
           {phase === 'lobby' && (
-            <button type="button" onClick={toggleReady}>
-              {ready ? 'READY 解除' : 'READY'}
-            </button>
+            <div className="match-lobby-actions">
+              <button type="button" onClick={toggleReady}>
+                {ready ? 'READY 解除' : 'READY'}
+              </button>
+            </div>
           )}
 
           {phase === 'countdown' && (

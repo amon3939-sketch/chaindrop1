@@ -4,8 +4,6 @@
     "outDir": "./dist",
     "lib": ["ES2022"],
     "types": ["node", "vitest/globals"],
-    "experimentalDecorators": true,
-    "emitDecoratorMetadata": true,
     "paths": {
       "@chaindrop/shared": ["../shared/src/index.ts"],
       "@chaindrop/shared/*": ["../shared/src/*"]
