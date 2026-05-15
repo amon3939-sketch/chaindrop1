@@ -332,32 +332,37 @@ button {
  */
 .lobby-connect button,
 .lobby-create button,
-.match-lobby-scene > button {
+.match-lobby-actions button {
   background: #ffd60a;
   color: #0a0a14;
   border: 2px solid #ffd60a;
   border-radius: 999px;
-  padding: 14px 32px;
+  padding: 14px 36px;
   font-size: 1.05rem;
   font-weight: 700;
   letter-spacing: 0.06em;
   transition: transform 120ms ease, background 120ms ease;
-  min-width: 140px;
 }
 
 .lobby-connect button:disabled,
 .lobby-create button:disabled,
-.match-lobby-scene > button:disabled {
+.match-lobby-actions button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
 
 .lobby-connect button:hover:not(:disabled),
 .lobby-create button:hover:not(:disabled),
-.match-lobby-scene > button:hover:not(:disabled) {
+.match-lobby-actions button:hover:not(:disabled) {
   transform: translateY(-1px);
   background: #ffe34a;
   border-color: #ffe34a;
+}
+
+.match-lobby-actions {
+  display: flex;
+  justify-content: center;
+  padding: 8px 0 0;
 }
 
 .lobby-rooms h3 {
@@ -433,6 +438,14 @@ button {
   font-size: 1rem;
 }
 
+.match-lobby-status {
+  margin: 0;
+  font-size: 1rem;
+  color: #aab;
+  text-align: center;
+  letter-spacing: 0.04em;
+}
+
 .match-lobby-players {
   list-style: none;
   margin: 0;
@@ -444,7 +457,7 @@ button {
 
 .match-lobby-players li {
   display: grid;
-  grid-template-columns: 56px 1fr auto;
+  grid-template-columns: 60px 1fr 90px;
   gap: 18px;
   align-items: center;
   padding: 16px 22px;
@@ -452,6 +465,37 @@ button {
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 12px;
   font-size: 1.1rem;
+}
+
+.match-lobby-players li.empty {
+  background: rgba(255, 255, 255, 0.025);
+  border-style: dashed;
+  color: #889;
+}
+
+.match-lobby-slot {
+  font-weight: 700;
+  color: #ffd60a;
+  letter-spacing: 0.05em;
+}
+
+.match-lobby-players li.empty .match-lobby-slot {
+  color: #556;
+}
+
+.match-lobby-name {
+  font-weight: 600;
+}
+
+.match-lobby-status-tag {
+  text-align: right;
+  font-size: 0.95rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+}
+
+.match-lobby-players li:not(.empty) .match-lobby-status-tag {
+  color: #6ce048;
 }
 
 .match-lobby-countdown {

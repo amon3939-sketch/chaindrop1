@@ -5,16 +5,22 @@
  * seed + drop queue, transition to `running`. INPUT forwarding,
  * STATE_HASH desync detection, and reconnect support are M3b/M3c.
  *
- * See D6 §6.
+ * See D6 §6 — and the note in `state.ts` for why this file maintains
+ * room state in plain JS instead of through Colyseus's schema sync.
+ * Every shape that used to live on `this.state` (players + config +
+ * status) now lives on plain instance fields, and clients learn about
+ * changes through manual `broadcast('MATCH_ROOM_STATE', ...)` of the
+ * zod-typed message we already defined for the protocol.
  */
 
 import { generateDropQueue } from '@chaindrop/shared';
-import { type RoomSummary, matchC2S } from '@chaindrop/shared/protocol';
+import type { MatchPlayer, RoomSummary } from '@chaindrop/shared/protocol';
+import { matchC2S } from '@chaindrop/shared/protocol';
 import { type Client, Room } from '@colyseus/core';
-import { lobbyBus } from '../util/lobbyBus';
+import { lobbyBus, matchRooms } from '../util/lobbyBus';
 import { logger } from '../util/logger';
 import { sanitizeNickname } from '../util/sanitize';
-import { MatchPlayerSchema, MatchRoomState } from './state';
+import { MatchRoomState } from './state';
 
 export interface MatchCreateOptions {
   roomId: string;
@@ -39,23 +45,38 @@ const DROP_QUEUE_LENGTH = 1024;
 // cover an inter-region websocket round-trip.
 const MATCH_BEGIN_PADDING_MS = 200;
 
+type Status = 'lobby' | 'countdown' | 'running' | 'finished';
+
 export class MatchRoom extends Room<MatchRoomState> {
   override maxClients = 4;
   override autoDispose = false;
 
+  // ---- room metadata ----
   private roomIdValue = '';
+  private capacityValue: 2 | 3 | 4 = 2;
+  private colorModeValue: 4 | 5 = 4;
+  private isPrivateValue = false;
   private joinCode: string | undefined;
   private name = '';
+
+  // ---- run-time state (replaces what used to live on `this.state`) ----
+  private status: Status = 'lobby';
+  private players = new Map<string, MatchPlayer>();
+
+  // ---- countdown / match state ----
   private countdownHandle: ReturnType<Room['clock']['setTimeout']> | undefined;
   private matchSeed = 0;
   private dropQueue: [string, string][] = [];
 
   override onCreate(opts: MatchCreateOptions): void {
+    // Empty Schema state — the room still needs SOMETHING to satisfy
+    // Colyseus's room/serializer contract, but nothing on it is
+    // decorated, so the encoder never has to touch metadata.
     this.setState(new MatchRoomState());
-    this.state.config.capacity = opts.capacity;
-    this.state.config.colorMode = opts.colorMode;
-    this.state.config.isPrivate = opts.isPrivate;
-    this.state.config.name = opts.name;
+
+    this.capacityValue = opts.capacity;
+    this.colorModeValue = opts.colorMode;
+    this.isPrivateValue = opts.isPrivate;
     this.maxClients = opts.capacity;
     this.roomIdValue = opts.roomId;
     this.joinCode = opts.joinCode;
@@ -66,12 +87,13 @@ export class MatchRoom extends Room<MatchRoomState> {
 
     this.onMessage('*', (client, type, message) => this.handle(client, type, message));
 
+    matchRooms.set(this.roomIdValue, this.summary());
     lobbyBus.emit('room:created', this.summary());
     logger.info({ roomId: this.roomIdValue, capacity: opts.capacity }, 'MatchRoom created');
   }
 
   override onJoin(client: Client, opts: MatchJoinOptions): void {
-    if (this.state.status !== 'lobby') {
+    if (this.status !== 'lobby') {
       client.leave(4001, 'MATCH_IN_PROGRESS');
       return;
     }
@@ -82,46 +104,76 @@ export class MatchRoom extends Room<MatchRoomState> {
 
     const slot = this.assignSlot();
     const nickname = sanitizeNickname(opts.nickname);
-    const player = new MatchPlayerSchema();
-    player.playerId = client.sessionId;
-    player.nickname = nickname;
-    player.characterId = opts.characterId;
-    player.slotIndex = slot;
-    player.ready = false;
-    player.connected = true;
-    this.state.players.set(client.sessionId, player);
+    const player: MatchPlayer = {
+      playerId: client.sessionId,
+      nickname,
+      characterId: opts.characterId,
+      slotIndex: slot,
+      ready: false,
+      connected: true,
+    };
+    this.players.set(client.sessionId, player);
 
-    lobbyBus.emit('room:update', this.summary());
+    this.broadcastRoomState();
+    this.publishSummary();
     logger.info({ roomId: this.roomIdValue, sessionId: client.sessionId, slot }, 'match join');
   }
 
   override onLeave(client: Client, _consented: boolean): void {
-    const p = this.state.players.get(client.sessionId);
+    const p = this.players.get(client.sessionId);
     if (!p) return;
     // M3b will wrap `running` leaves with `allowReconnection` and a
     // disconnect timer — for now we just remove the player.
-    this.state.players.delete(client.sessionId);
+    this.players.delete(client.sessionId);
 
-    if (this.state.status === 'countdown') {
+    if (this.status === 'countdown') {
       // Someone bailed mid-countdown — abort and rewind to lobby.
       this.cancelCountdown('PLAYER_LEFT');
     }
 
-    if (this.state.players.size === 0) {
-      this.state.status = 'lobby';
-      lobbyBus.emit('room:removed', this.roomIdValue);
+    if (this.players.size === 0) {
+      this.status = 'lobby';
+      this.publishRemoval();
       this.disconnect();
       return;
     }
-    lobbyBus.emit('room:update', this.summary());
+    this.broadcastRoomState();
+    this.publishSummary();
   }
 
   override onDispose(): void {
-    lobbyBus.emit('room:removed', this.roomIdValue);
+    this.publishRemoval();
     logger.info({ roomId: this.roomIdValue }, 'MatchRoom disposed');
   }
 
   // ----------------------------------------------------------------
+
+  /** Write the latest summary into the shared registry and fan it out
+   *  to every active LobbyRoom. Always pair the two — the registry is
+   *  what the next JOIN_LOBBY snapshot reads from, the bus is what the
+   *  live LOBBY_STATE broadcasts react to. */
+  private publishSummary(): void {
+    const summary = this.summary();
+    matchRooms.set(this.roomIdValue, summary);
+    lobbyBus.emit('room:update', summary);
+  }
+
+  private publishRemoval(): void {
+    matchRooms.delete(this.roomIdValue);
+    lobbyBus.emit('room:removed', this.roomIdValue);
+  }
+
+  private broadcastRoomState(): void {
+    this.broadcast('MATCH_ROOM_STATE', {
+      players: Array.from(this.players.values()),
+      config: {
+        capacity: this.capacityValue,
+        colorMode: this.colorModeValue,
+        isPrivate: this.isPrivateValue,
+      },
+      status: this.status,
+    });
+  }
 
   private handle(client: Client, type: string | number, raw: unknown): void {
     const parsed = matchC2S.safeParse({
@@ -161,21 +213,23 @@ export class MatchRoom extends Room<MatchRoomState> {
   }
 
   private onSetReady(client: Client, ready: boolean): void {
-    const p = this.state.players.get(client.sessionId);
+    const p = this.players.get(client.sessionId);
     if (!p) return;
     p.ready = ready;
     // Cancel the countdown if anyone un-readies while it is running.
-    if (this.state.status === 'countdown' && !ready) {
+    if (this.status === 'countdown' && !ready) {
       this.cancelCountdown('PLAYER_UNREADIED');
+      this.broadcastRoomState();
       return;
     }
+    this.broadcastRoomState();
     this.checkAllReady();
   }
 
   private checkAllReady(): void {
-    if (this.state.status !== 'lobby') return;
-    const players = Array.from(this.state.players.values());
-    const full = players.length === this.state.config.capacity;
+    if (this.status !== 'lobby') return;
+    const players = Array.from(this.players.values());
+    const full = players.length === this.capacityValue;
     const allReady = players.every((p) => p.ready && p.connected);
     if (full && allReady) {
       this.startCountdown();
@@ -183,8 +237,9 @@ export class MatchRoom extends Room<MatchRoomState> {
   }
 
   private startCountdown(): void {
-    this.state.status = 'countdown';
-    lobbyBus.emit('room:update', this.summary());
+    this.status = 'countdown';
+    this.broadcastRoomState();
+    this.publishSummary();
     this.broadcast('COUNTDOWN_START', {
       durationFrames: COUNTDOWN_FRAMES,
       serverStartMs: Date.now(),
@@ -196,9 +251,10 @@ export class MatchRoom extends Room<MatchRoomState> {
   private cancelCountdown(reason: string): void {
     this.countdownHandle?.clear();
     this.countdownHandle = undefined;
-    this.state.status = 'lobby';
+    this.status = 'lobby';
     this.broadcast('COUNTDOWN_CANCEL', { reason });
-    lobbyBus.emit('room:update', this.summary());
+    this.broadcastRoomState();
+    this.publishSummary();
     logger.info({ roomId: this.roomIdValue, reason }, 'countdown cancelled');
   }
 
@@ -210,15 +266,16 @@ export class MatchRoom extends Room<MatchRoomState> {
     this.dropQueue = generateDropQueue(
       this.matchSeed,
       DROP_QUEUE_LENGTH,
-      this.state.config.colorMode as 4 | 5,
+      this.colorModeValue,
     ) as unknown as [string, string][];
 
-    const playerOrder = Array.from(this.state.players.values())
+    const playerOrder = Array.from(this.players.values())
       .sort((a, b) => a.slotIndex - b.slotIndex)
       .map((p) => p.playerId);
 
-    this.state.status = 'running';
-    lobbyBus.emit('room:update', this.summary());
+    this.status = 'running';
+    this.broadcastRoomState();
+    this.publishSummary();
 
     this.broadcast('MATCH_START', {
       seed: this.matchSeed,
@@ -239,22 +296,22 @@ export class MatchRoom extends Room<MatchRoomState> {
 
   private assignSlot(): number {
     const used = new Set<number>();
-    for (const p of this.state.players.values()) used.add(p.slotIndex);
-    for (let i = 0; i < this.state.config.capacity; i++) {
+    for (const p of this.players.values()) used.add(p.slotIndex);
+    for (let i = 0; i < this.capacityValue; i++) {
       if (!used.has(i)) return i;
     }
-    return this.state.players.size; // fallback, shouldn't normally hit
+    return this.players.size; // fallback, shouldn't normally hit
   }
 
   private summary(): RoomSummary {
     return {
       roomId: this.roomIdValue,
       name: this.name,
-      capacity: this.state.config.capacity as 2 | 3 | 4,
-      colorMode: this.state.config.colorMode as 4 | 5,
-      players: this.state.players.size,
-      isPrivate: this.state.config.isPrivate,
-      status: this.state.status === 'finished' ? 'lobby' : this.state.status,
+      capacity: this.capacityValue,
+      colorMode: this.colorModeValue,
+      players: this.players.size,
+      isPrivate: this.isPrivateValue,
+      status: this.status === 'finished' ? 'lobby' : this.status,
     };
   }
 }

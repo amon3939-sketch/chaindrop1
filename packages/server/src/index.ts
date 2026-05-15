@@ -8,7 +8,7 @@
  */
 import { createServer } from 'node:http';
 import { PROTOCOL_VERSION } from '@chaindrop/shared';
-import { Server, matchMaker } from '@colyseus/core';
+import { Server } from '@colyseus/core';
 import { monitor } from '@colyseus/monitor';
 import { WebSocketTransport } from '@colyseus/ws-transport';
 import cors from 'cors';
@@ -57,12 +57,6 @@ gameServer.define('lobby', LobbyRoom);
 // `filterBy(['roomId'])` lets the client `joinById(roomId)` and have
 // Colyseus route to the MatchRoom whose `onCreate` set this exact id.
 gameServer.define('match', MatchRoom).filterBy(['roomId']);
-
-// Always have one LobbyRoom ready to greet incoming clients.
-matchMaker
-  .createRoom('lobby', {})
-  .then(() => logger.info('singleton LobbyRoom ready'))
-  .catch((err) => logger.error({ err }, 'failed to create LobbyRoom'));
 
 gameServer.listen(config.port);
 logger.info({ port: config.port, protocolVersion: PROTOCOL_VERSION }, 'server listening');

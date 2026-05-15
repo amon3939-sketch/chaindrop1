@@ -16,6 +16,15 @@ export interface LobbyBusEvents {
   'room:removed': (roomId: string) => void;
 }
 
+/**
+ * Authoritative registry of every active MatchRoom on this server,
+ * keyed by roomId. Lives at module scope because each LobbyRoom
+ * instance — and Colyseus may spin up multiple — needs to see the
+ * SAME set of rooms. MatchRoom owns the writes (via the bus events
+ * below); LobbyRoom only reads.
+ */
+export const matchRooms = new Map<string, RoomSummary>();
+
 class TypedEmitter extends EventEmitter {
   override emit<E extends keyof LobbyBusEvents>(
     event: E,
