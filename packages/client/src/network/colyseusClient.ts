@@ -10,9 +10,39 @@
 import { type LobbyS2C, type MatchS2C, lobbyS2C, matchS2C } from '@chaindrop/shared/protocol';
 import { Client, type Room } from 'colyseus.js';
 
-const SERVER_URL = import.meta.env.VITE_SERVER_URL ?? 'ws://localhost:2567';
+/**
+ * Resolve the websocket URL. Vite replaces `import.meta.env.VITE_SERVER_URL`
+ * with a string literal at build time, and our deploy workflow passes the
+ * value through `secrets.SERVER_URL_PRODUCTION` — which is the EMPTY STRING
+ * when the secret isn't set in the repo. Empty isn't nullish, so a plain
+ * `??` fallback wouldn't catch it; use `||` and a trim guard instead.
+ *
+ * Constructing `new Client('')` throws `Invalid URL` from the colyseus.js
+ * URL parser, which used to take the whole app down at module-load time.
+ */
+const SERVER_URL = (import.meta.env.VITE_SERVER_URL || '').trim() || 'ws://localhost:2567';
 
-export const colyseus = new Client(SERVER_URL);
+let _colyseus: Client | null = null;
+function getColyseus(): Client {
+  if (!_colyseus) _colyseus = new Client(SERVER_URL);
+  return _colyseus;
+}
+
+/**
+ * Lazy proxy: constructing the underlying Client throws if the URL is
+ * malformed. Routing every access through `getColyseus()` keeps the
+ * failure isolated to the moment a scene actually tries to connect,
+ * rather than blowing up React's initial render.
+ */
+type AnyFn = (...args: unknown[]) => unknown;
+
+export const colyseus = new Proxy({} as Client, {
+  get(_t, prop) {
+    const real = getColyseus() as unknown as Record<string | symbol, unknown>;
+    const value = real[prop];
+    return typeof value === 'function' ? (value as AnyFn).bind(real) : value;
+  },
+});
 
 export type LobbyRoomHandle = Room<unknown>;
 export type MatchRoomHandle = Room<unknown>;
